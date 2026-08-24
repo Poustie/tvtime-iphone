@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>TV Time</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#0e1116" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="TV Time" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="icon-192.png" />
+</head>
+<body>
+  <main id="app"><div class="loading">Chargement…</div></main>
+
+  <nav class="bottom-nav">
+    <a href="#/home" data-route="home"><span class="bn-ic">📺</span><span class="bn-lb">Séries</span></a>
+    <a href="#/movies" data-route="movies"><span class="bn-ic">🎬</span><span class="bn-lb">Films</span></a>
+    <a href="#/explore" data-route="explore"><span class="bn-ic">🧭</span><span class="bn-lb">Explorer</span></a>
+    <a href="#/profile" data-route="profile"><span class="bn-ic">👤</span><span class="bn-lb">Profil</span></a>
+  </nav>
+
+  <div id="modalRoot"></div>
+
+  <script src="data.js"></script>
+  <script src="seed.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
