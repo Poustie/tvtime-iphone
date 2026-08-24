@@ -509,7 +509,12 @@ main {
 @media (max-width: 640px) {
   .topbar { padding: 0 12px; height: 54px; gap: 12px; }
   .topbar-status { display: none; }
-  main { padding: 16px 12px 96px; }
+  main {
+    padding-top: max(16px, env(safe-area-inset-top));
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+    padding-bottom: max(96px, calc(env(safe-area-inset-bottom) + 78px));
+  }
   .page-head h1 { font-size: 20px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 12px; }
   .detail-hero .inner { flex-direction: column; align-items: flex-start; gap: 14px; }
