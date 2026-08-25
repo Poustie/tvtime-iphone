@@ -10,6 +10,14 @@ const DEFAULT_RUNTIME = 42; // minutes, fallback when unknown
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { date: '25 août 2026', title: 'Navigation & confort iPhone', items: [
+    'Changez de catégorie d\'un simple glissement (swipe) : Séries · Films · Explorer · Profil.',
+    'Sur iPhone : le double-appui ne zoome plus par accident.',
+    'Sur iPhone : la barre des catégories reste fixée tout en bas, sans à-coups.',
+  ] },
+  { date: '24 août 2026', title: 'Affichage iPhone', items: [
+    'Correction de la marge en haut de l\'écran : le contenu ne passe plus sous l\'encoche (Dynamic Island).',
+  ] },
   { date: '20 août 2026', title: 'Noms en français', items: [
     'Les séries et les films affichent désormais leur titre français sous les affiches (plus les titres anglais importés).',
     'La recherche dans la bibliothèque reconnaît aussi bien le titre français que le nom d\'origine.',
@@ -1779,6 +1787,32 @@ document.addEventListener('click', (e) => {
   const card = e.target.closest && e.target.closest('.show-card');
   if (card && !(e.target.closest && e.target.closest('button'))) { e.stopPropagation(); e.preventDefault(); }
 }, true);
+
+// ---- Swipe left/right to move between the main categories ----
+const SWIPE_ROUTES = ['home', 'movies', 'explore', 'profile'];
+let _swX = 0, _swY = 0, _swOn = false;
+document.addEventListener('touchstart', (e) => {
+  _swOn = false;
+  if (e.touches.length !== 1) return;
+  const t = e.target;
+  // Leave horizontal scrollers, inputs and open modals alone.
+  if (t.closest && t.closest('.cast-list, .sort-chips, .pv-seasons, .react, input, textarea, select')) return;
+  if (document.getElementById('modalRoot') && document.getElementById('modalRoot').children.length) return;
+  if (!SWIPE_ROUTES.includes(currentRoute().split('/')[0])) return;
+  _swOn = true; _swX = e.touches[0].clientX; _swY = e.touches[0].clientY;
+}, { passive: true });
+document.addEventListener('touchend', (e) => {
+  if (!_swOn) return;
+  _swOn = false;
+  const dx = e.changedTouches[0].clientX - _swX;
+  const dy = e.changedTouches[0].clientY - _swY;
+  if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 2) return; // require a clear horizontal swipe
+  let i = SWIPE_ROUTES.indexOf(currentRoute().split('/')[0]);
+  if (i < 0) return;
+  i += (dx < 0 ? 1 : -1); // swipe left = next category, swipe right = previous
+  if (i < 0 || i >= SWIPE_ROUTES.length) return; // no wrap-around at the ends
+  location.hash = '#/' + SWIPE_ROUTES[i];
+}, { passive: true });
 
 // progressively load posters for visible cards (only when a TMDB key is set)
 async function hydratePosters(container, list) {
