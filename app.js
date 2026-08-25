@@ -10,28 +10,30 @@ const DEFAULT_RUNTIME = 42; // minutes, fallback when unknown
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
-  { date: '25 août 2026', title: 'Navigation & confort iPhone', items: [
+  { id: 9, date: '25 août 2026', title: 'Navigation & confort', items: [
     'Changez de catégorie d\'un simple glissement (swipe) : Séries · Films · Explorer · Profil.',
+    'Transition animée : l\'ancienne page glisse sur le côté pendant que la nouvelle apparaît.',
+    'Une fenêtre « Nouveautés » vous résume les changements à la première ouverture après une mise à jour.',
     'Sur iPhone : le double-appui ne zoome plus par accident.',
     'Sur iPhone : la barre des catégories reste fixée tout en bas, sans à-coups.',
   ] },
-  { date: '24 août 2026', title: 'Affichage iPhone', items: [
+  { id: 8, date: '24 août 2026', title: 'Affichage iPhone', items: [
     'Correction de la marge en haut de l\'écran : le contenu ne passe plus sous l\'encoche (Dynamic Island).',
   ] },
-  { date: '20 août 2026', title: 'Noms en français', items: [
+  { id: 7, date: '20 août 2026', title: 'Noms en français', items: [
     'Les séries et les films affichent désormais leur titre français sous les affiches (plus les titres anglais importés).',
     'La recherche dans la bibliothèque reconnaît aussi bien le titre français que le nom d\'origine.',
   ] },
-  { date: '14 août 2026', title: 'Fin de série & sauvegardes', items: [
+  { id: 6, date: '14 août 2026', title: 'Fin de série & sauvegardes', items: [
     'Une petite célébration animée (confettis) apparaît quand vous terminez une série, avec vos statistiques de visionnage.',
     'Import de sauvegarde plus robuste : une sauvegarde un peu abîmée ne bloque plus l\'application.',
     'Dans Explorer, les œuvres déjà dans votre bibliothèque sont signalées « Dans ma liste » et ouvrent directement leur vraie fiche.',
   ] },
-  { date: '14 août 2026', title: 'Épisodes d\'animes', items: [
+  { id: 5, date: '14 août 2026', title: 'Épisodes d\'animes', items: [
     'Correction de l\'alignement des épisodes pour les animes à numérotation continue (Naruto, Bleach, One Piece…) : les épisodes cochés correspondent enfin à la bonne saison.',
     'À l\'ouverture d\'une série, on vous emmène juste après le dernier épisode vu (les épisodes sautés ne bloquent plus).',
   ] },
-  { date: '11 août 2026', title: 'Nouvelle navigation', items: [
+  { id: 4, date: '11 août 2026', title: 'Nouvelle navigation', items: [
     'Barre de navigation en bas : Séries · Films · Explorer · Profil.',
     'La page Séries a deux onglets : « À voir » (par catégories) et « À suivre » (le prochain épisode de chaque série).',
     'Explorer : cherchez de nouvelles séries et films, avec un aperçu complet avant de les ajouter.',
@@ -40,18 +42,18 @@ const CHANGELOG = [
     'Sur une saison : boutons « Tout vu » / « Tout non vu ».',
     'Suivi automatique des séries dont vous avez vu au moins un épisode.',
   ] },
-  { date: '6 août 2026', title: 'Installation & sauvegarde', items: [
+  { id: 3, date: '6 août 2026', title: 'Installation & sauvegarde', items: [
     'Installation sur téléphone à une adresse fixe : vos données restent d\'une mise à jour à l\'autre, sans ré-importer.',
     'Possibilité de retirer une note donnée par erreur (bouton ✕ sur les étoiles).',
   ] },
-  { date: '4 août 2026', title: 'Notes, réactions & profil', items: [
+  { id: 2, date: '4 août 2026', title: 'Notes, réactions & profil', items: [
     'Nom de profil personnalisable.',
     'Réagissez aux films comme aux épisodes de série.',
     'Noter une œuvre ne vous fait plus changer d\'onglet ; les étoiles se remplissent simplement.',
     'Récupération des dates de visionnage des films et de vos films favoris.',
     'Export / Import : sauvegarde complète de tout votre historique, transférable sur un autre appareil.',
   ] },
-  { date: '3 août 2026', title: 'Fiches enrichies', items: [
+  { id: 1, date: '3 août 2026', title: 'Fiches enrichies', items: [
     'Fiches détaillées « À propos » : casting, bande-annonce, plateformes de streaming, note du public, dates.',
     'Fiche complète pour les films.',
     'Listes personnalisées modifiables, favoris, statistiques films.',
@@ -103,6 +105,7 @@ let userState = {
   profileName: '', // nom affiché dans « Bonjour … » (paramétrable, override du nom importé)
   userLists: [],   // [{id,name,shows:[key],movies:[name]}] listes personnalisables
   lists: null,     // null = use baseline lists; else array
+  seenChangelog: 0, // id de la dernière note de version vue (pop-up « nouveautés »)
 };
 // tmdbCache = metadata cache (persisted to tmdb-cache.json)
 let tmdbCache = { map: {}, shows: {}, seasons: {}, movies: {}, movieMeta: {} };
@@ -818,6 +821,38 @@ function openMovie(name) {
 }
 const BACK_LABELS = { home: 'Séries', library: 'Bibliothèque', upnext: 'À suivre', explore: 'Explorer', movies: 'Films', lists: 'Listes', stats: 'Statistiques', profile: 'Profil', settings: 'Réglages', changelog: 'Notes de version' };
 function backLabel() { return BACK_LABELS[(backTarget || '').replace(/^#\//, '').split('/')[0]] || 'Retour'; }
+
+// Slide transition when moving from one main category to another (swipe/tap).
+let _lastTopRoute = null;
+function _makeSnapshot() {
+  const el = document.getElementById('app');
+  const sy = window.scrollY;
+  const snap = el.cloneNode(true);
+  snap.removeAttribute('id');
+  snap.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
+  snap.classList.add('page-snap');
+  snap.style.transform = `translate(0, ${-sy}px)`;
+  document.body.appendChild(snap);
+  return { snap, sy };
+}
+function _runSlide(el, snapObj, dir) {
+  const { snap, sy } = snapObj;
+  const from = dir > 0 ? '100%' : '-100%';   // new page enters from this side
+  const to = dir > 0 ? '-100%' : '100%';     // old page leaves to this side
+  const dur = 260;
+  el.classList.add('page-anim');
+  el.style.transition = 'none';
+  el.style.transform = `translateX(${from})`;
+  void el.offsetWidth;                        // flush the start position
+  el.style.transition = `transform ${dur}ms ease`;
+  el.style.transform = 'translateX(0)';
+  snap.style.transition = `transform ${dur}ms ease`;
+  snap.style.transform = `translate(${to}, ${-sy}px)`;
+  setTimeout(() => {
+    el.style.transition = ''; el.style.transform = ''; el.classList.remove('page-anim');
+    snap.remove();
+  }, dur + 40);
+}
 async function render() {
   const [name, ...rest] = currentRoute().split('/');
   if (name !== 'show' && name !== 'movie') backTarget = location.hash || '#/home';
@@ -825,12 +860,21 @@ async function render() {
   // Library / stats / lists / settings live under the "Profil" tab.
   const navName = ['library', 'stats', 'lists', 'settings', 'changelog'].includes(name) ? 'profile' : (name === 'preview' ? 'explore' : name);
   document.querySelectorAll('.bottom-nav a').forEach(a => a.classList.toggle('active', a.dataset.route === navName));
+  // Direction of the slide, only between the four main categories.
+  const newTop = SWIPE_ROUTES.includes(name) ? name : null;
+  let dir = 0;
+  if (_lastTopRoute && newTop && _lastTopRoute !== newTop) {
+    dir = SWIPE_ROUTES.indexOf(newTop) > SWIPE_ROUTES.indexOf(_lastTopRoute) ? 1 : -1;
+  }
+  _lastTopRoute = newTop;
   const el = document.getElementById('app');
+  const snapObj = dir !== 0 ? _makeSnapshot() : null;
   const fn = routes[name] || routes['library'];
   el.innerHTML = '<div class="loading">Chargement…</div>';
   try { await fn(el, rest); } catch (e) { el.innerHTML = `<div class="empty"><div class="big">⚠️</div>${esc(e.message)}</div>`; }
   const saved = scrollByHash[location.hash];
   window.scrollTo(0, name !== 'show' && name !== 'movie' && saved ? saved : 0);
+  if (snapObj) _runSlide(el, snapObj, dir);
 }
 window.addEventListener('hashchange', render);
 
@@ -2937,6 +2981,30 @@ function showModal(html, onReady) {
 }
 function closeModal() { document.getElementById('modalRoot').innerHTML = ''; }
 
+// Pop-up « Nouveautés » : au premier lancement suivant une mise à jour, liste les
+// notes de version ajoutées depuis la dernière visite. Fermée = marquée comme vue.
+function maybeShowChangelogPopup() {
+  const newest = CHANGELOG.length ? (CHANGELOG[0].id || 0) : 0;
+  const seen = userState.seenChangelog || 0;
+  const fresh = CHANGELOG.filter(e => (e.id || 0) > seen);
+  if (!fresh.length || newest <= seen) return;
+  // Marqué vu tout de suite : ne réapparaît pas, même fermé en touchant à côté.
+  userState.seenChangelog = newest;
+  scheduleSaveState();
+  const body = fresh.map(e => `
+    <div class="cl-modal-entry">
+      <h4>${esc(e.title)} <span class="cl-date">${esc(e.date)}</span></h4>
+      <ul class="cl-list">${e.items.map(it => `<li>${esc(it)}</li>`).join('')}</ul>
+    </div>`).join('');
+  showModal(`
+    <h2 style="margin:0 0 4px">🆕 Nouveautés</h2>
+    <p class="hint" style="color:var(--muted);margin:0 0 12px">Ce qui a changé depuis votre dernière visite.</p>
+    <div class="cl-modal-body">${body}</div>
+    <div class="modal-actions" style="margin-top:14px;display:flex;justify-content:flex-end">
+      <button class="btn primary" data-close>J'ai compris</button>
+    </div>`);
+}
+
 function needKeyHtml(msg) {
   return `<div class="empty"><div class="big">🔑</div><p>${esc(msg)}</p><a class="btn primary" href="#/settings">Ajouter une clé TMDB</a></div>`;
 }
@@ -2986,6 +3054,7 @@ function updateSyncStatus() {
   updateSyncStatus();
   if (!location.hash) location.hash = '#/home';
   render();
+  maybeShowChangelogPopup();
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }

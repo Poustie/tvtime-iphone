@@ -80,6 +80,13 @@ main {
   padding-bottom: max(96px, calc(env(safe-area-inset-bottom) + 78px));
 }
 .loading { color: var(--muted); padding: 60px; text-align: center; }
+
+/* Slide transition between the main categories */
+.page-snap {
+  position: fixed; left: 0; right: 0; top: 0; height: 100dvh; z-index: 30;
+  overflow: hidden; pointer-events: none; will-change: transform;
+}
+.page-anim { will-change: transform; }
 .page-head { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
 .page-head h1 { font-size: 24px; margin: 0; }
 .page-head .sub { color: var(--muted); font-size: 13px; }
@@ -135,6 +142,13 @@ main {
 .cl-date { color: var(--muted); font-size: 12px; font-weight: 400; }
 .cl-list { margin: 10px 0 0; padding-left: 20px; }
 .cl-list li { margin: 6px 0; line-height: 1.45; }
+
+/* « Nouveautés » pop-up */
+.cl-modal-body { max-height: 52vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.cl-modal-entry { padding: 10px 0; border-top: 1px solid var(--line); }
+.cl-modal-entry:first-child { border-top: none; padding-top: 0; }
+.cl-modal-entry h4 { margin: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cl-modal-entry .cl-list { margin-top: 6px; }
 
 /* Show grid */
 .grid {
