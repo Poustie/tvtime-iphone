@@ -12,7 +12,8 @@ const DEFAULT_RUNTIME = 42; // minutes, fallback when unknown
 const CHANGELOG = [
   { id: 11, date: '25 août 2026', title: 'Partager sa liste', items: [
     'Partagez votre liste de séries et films à quelqu\'un, <b>sans votre historique</b> : rien n\'est marqué comme vu chez lui (Réglages → Partager ma liste).',
-    'À la réception, la liste reçue s\'ajoute à la sienne sans écraser ni dupliquer ce qu\'il a déjà.',
+    'À la réception, la liste s\'ajoute à la sienne <b>sans doublon</b> (même s\'il a déjà vu l\'œuvre) et <b>sans écraser</b> ce qu\'il a déjà.',
+    'Les séries et films reçus sont considérés comme <b>ajoutés par lui</b> : il peut les supprimer comme les autres.',
   ] },
   { id: 10, date: '25 août 2026', title: 'Glissement entre catégories', items: [
     'Le changement de catégorie joue une petite animation de glissement.',
@@ -223,10 +224,10 @@ function buildModel() {
   }
   // User-added shows (planned for the future). Keyed by a synthetic tmdb key.
   for (const cs of userState.customShows || []) {
-    const k = cs.key || ('tmdb:' + cs.tmdbId);
+    const k = cs.key || (cs.tmdbId ? 'tmdb:' + cs.tmdbId : (cs.tvdbId != null ? String(cs.tvdbId) : 'n:' + cs.name));
     if (shows.has(k)) continue;
     shows.set(k, {
-      key: k, tvdbId: null, forcedTmdb: cs.tmdbId, name: cs.name, poster: cs.poster || null,
+      key: k, tvdbId: cs.tvdbId ?? null, forcedTmdb: cs.tmdbId ?? null, name: cs.name, poster: cs.poster || null,
       followed: true, favorited: false,
       archived: (userState.archived[k] != null) ? userState.archived[k] : false,
       specialStatus: null,
@@ -1076,7 +1077,8 @@ function addCustomShow(hit) {
 }
 function removeCustomShow(key) {
   if (!userState.customShows) return;
-  const i = userState.customShows.findIndex(c => (c.key || ('tmdb:' + c.tmdbId)) === key);
+  const keyOf = (c) => c.key || (c.tmdbId ? 'tmdb:' + c.tmdbId : (c.tvdbId != null ? String(c.tvdbId) : 'n:' + c.name));
+  const i = userState.customShows.findIndex(c => keyOf(c) === key);
   if (i >= 0) { userState.customShows.splice(i, 1); scheduleSaveState(); }
 }
 function addCustomMovie(hit) {
@@ -1094,6 +1096,8 @@ function removeCustomMovie(name) {
   const i = userState.customMovies.findIndex(m => m.name === name);
   if (i >= 0) { userState.customMovies.splice(i, 1); scheduleSaveState(); }
 }
+// A movie is "mine" (deletable) if it lives in my custom list, whatever its flags.
+function isCustomMovie(m) { return !!(m && (m.custom || (userState.customMovies || []).some(c => c.name === m.name))); }
 
 // Unified search (button in Séries / Films): finds works already in the library
 // AND new results on TMDB. kind: 'tv' | 'movie'.
@@ -1499,7 +1503,7 @@ route('movie', async (el, rest) => {
             <button class="btn ${isFavMovie(m) ? 'primary' : ''}" id="mFav">${isFavMovie(m) ? '❤️ Favori' : '🤍 Favori'}</button>
             <button class="btn" id="mAddList">📃 Ajouter à une liste</button>
             <button class="btn" id="mFind">🔍 Chercher une affiche</button>
-            ${m.custom ? `<button class="btn danger" id="mDel">🗑 Retirer</button>` : ''}
+            ${isCustomMovie(m) ? `<button class="btn danger" id="mDel">🗑 Retirer</button>` : ''}
           </div>
           <div class="movie-react">
             <span class="react-label">Ma réaction</span>
@@ -1552,7 +1556,7 @@ function movieCardHtml(m) {
   const rwBtn = st === 'watched'
     ? `<button class="card-rw ${rw > 0 ? 'on' : ''}" data-mrw="${esc(m.name)}" title="Visionnages — clic : +1, clic droit : −1">🔁${rw > 0 ? '×' + (rw + 1) : ''}</button>`
     : '';
-  const delBtn = m.custom ? `<button class="card-del" data-mdel="${esc(m.name)}" title="Retirer ce film ajouté">🗑</button>` : '';
+  const delBtn = isCustomMovie(m) ? `<button class="card-del" data-mdel="${esc(m.name)}" title="Retirer ce film ajouté">🗑</button>` : '';
   return `<div class="show-card movie-card" data-mname="${esc(m.name)}">
     <div class="poster" data-mposter="${esc(m.name)}">
       <div class="fallback-title">${esc(movieDisplayName(m))}</div>
@@ -2947,14 +2951,23 @@ function exportData() {
 }
 const _normName = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 // Export just the LIST of series & movies (no watch history at all), to share
-// with a friend. When imported, nothing is marked as seen.
+// with a friend. Includes TMDB ids so the receiver can de-duplicate reliably.
 function exportSharedList() {
+  const showTmdb = userState.showTmdb || {};
+  const movTmdb = userState.movieTmdb || {};
   const shows = [];
-  for (const s of (DATA.shows || [])) shows.push({ tvdbId: s.tvdbId ?? null, name: s.name });
-  for (const cs of (userState.customShows || [])) shows.push({ tmdbId: cs.tmdbId ?? null, name: cs.name, poster: cs.poster || null });
+  for (const s of (DATA.shows || [])) {
+    const tmdbId = (s.tvdbId != null ? (tmdbCache.map[s.tvdbId] ?? null) : null) ?? (showTmdb[showKey(s)] ?? null);
+    shows.push({ tvdbId: s.tvdbId ?? null, tmdbId: tmdbId ?? null, name: s.name });
+  }
+  for (const cs of (userState.customShows || [])) shows.push({ tvdbId: cs.tvdbId ?? null, tmdbId: cs.tmdbId ?? null, name: cs.name, poster: cs.poster || null });
   const movies = [];
-  for (const m of (DATA.movies || [])) movies.push({ name: m.name, releaseDate: m.releaseDate || '', runtime: m.runtime || 0 });
-  for (const cm of (userState.customMovies || [])) movies.push({ name: cm.name, releaseDate: cm.releaseDate || '', runtime: cm.runtime || 0 });
+  const pushMovie = (name, releaseDate, runtime) => {
+    const rec = movTmdb[name] || (tmdbCache.movies && tmdbCache.movies[name]);
+    movies.push({ name, tmdbId: (rec && rec.id) || null, releaseDate: releaseDate || '', runtime: runtime || 0 });
+  };
+  for (const m of (DATA.movies || [])) pushMovie(m.name, m.releaseDate, m.runtime);
+  for (const cm of (userState.customMovies || [])) pushMovie(cm.name, cm.releaseDate, cm.runtime);
   const payload = { format: 'tvtime-sharedlist', exportedAt: new Date().toISOString(), shows, movies };
   const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   const a = document.createElement('a');
@@ -2962,37 +2975,51 @@ function exportSharedList() {
   a.click();
   toast(`Liste exportée : ${shows.length} série(s), ${movies.length} film(s)`);
 }
-// Merge a shared list into MY data WITHOUT overwriting anything I already have,
-// and WITHOUT marking anything as seen.
+// Merge a shared list into MY OWN additions (customShows / customMovies) so the
+// items are treated as added by me (deletable) — WITHOUT overwriting anything I
+// already have and WITHOUT marking anything as seen.
 async function mergeSharedList(parsed) {
-  DATA.shows = Array.isArray(DATA.shows) ? DATA.shows : [];
-  DATA.movies = Array.isArray(DATA.movies) ? DATA.movies : [];
   userState.customShows = userState.customShows || [];
   userState.customMovies = userState.customMovies || [];
-  const haveTvdb = new Set(DATA.shows.map(s => String(s.tvdbId)));
-  const haveShowName = new Set(DATA.shows.map(s => _normName(s.name)).concat((userState.customShows).map(s => _normName(s.name))));
-  const haveMovie = new Set(DATA.movies.map(m => _normName(m.name)).concat((userState.customMovies).map(m => _normName(m.name))));
+  const showTmdb = userState.showTmdb || {};
+  const movTmdb = userState.movieTmdb || {};
+  const movId = (name) => { const r = movTmdb[name] || (tmdbCache.movies && tmdbCache.movies[name]); return r && r.id != null ? String(r.id) : null; };
+  // Everything I already have (catalogue + my own additions).
+  const haveTvdb = new Set(), haveTmdb = new Set(), haveShowName = new Set();
+  for (const s of (DATA.shows || [])) {
+    if (s.tvdbId != null) haveTvdb.add(String(s.tvdbId));
+    const tid = (s.tvdbId != null ? tmdbCache.map[s.tvdbId] : null) ?? (showTmdb[showKey(s)] ?? null);
+    if (tid != null) haveTmdb.add(String(tid));
+    haveShowName.add(_normName(s.name));
+  }
+  for (const cs of userState.customShows) {
+    if (cs.tvdbId != null) haveTvdb.add(String(cs.tvdbId));
+    if (cs.tmdbId != null) haveTmdb.add(String(cs.tmdbId));
+    haveShowName.add(_normName(cs.name));
+  }
+  const haveMovieName = new Set(), haveMovieTmdb = new Set();
+  for (const m of (DATA.movies || [])) { haveMovieName.add(_normName(m.name)); const id = movId(m.name); if (id) haveMovieTmdb.add(id); }
+  for (const cm of userState.customMovies) { haveMovieName.add(_normName(cm.name)); const id = movId(cm.name); if (id) haveMovieTmdb.add(id); }
   let addedShows = 0, addedMovies = 0;
   const now = new Date().toISOString();
   for (const s of (parsed.shows || [])) {
-    const nm = _normName(s.name);
-    if (!nm) continue;
-    if ((s.tvdbId != null && haveTvdb.has(String(s.tvdbId))) || haveShowName.has(nm)) continue;
-    if (s.tvdbId == null && s.tmdbId != null) {
-      userState.customShows.push({ key: 'tmdb:' + s.tmdbId, tmdbId: s.tmdbId, name: s.name, poster: s.poster || null, addedAt: now });
-    } else {
-      DATA.shows.push({ tvdbId: s.tvdbId ?? null, name: s.name, followed: true, nbEpisodesSeen: 0, showRating: null, favorited: false, archived: false, createdAt: now });
-      if (s.tvdbId != null) haveTvdb.add(String(s.tvdbId));
-    }
+    const nm = _normName(s.name); if (!nm) continue;
+    if ((s.tvdbId != null && haveTvdb.has(String(s.tvdbId))) ||
+        (s.tmdbId != null && haveTmdb.has(String(s.tmdbId))) ||
+        haveShowName.has(nm)) continue;
+    const key = s.tmdbId != null ? 'tmdb:' + s.tmdbId : (s.tvdbId != null ? String(s.tvdbId) : 'n:' + s.name);
+    userState.customShows.push({ key, tvdbId: s.tvdbId ?? null, tmdbId: s.tmdbId ?? null, name: s.name, poster: s.poster || null, addedAt: now });
+    if (s.tvdbId != null) haveTvdb.add(String(s.tvdbId));
+    if (s.tmdbId != null) haveTmdb.add(String(s.tmdbId));
     haveShowName.add(nm); addedShows++;
   }
   for (const m of (parsed.movies || [])) {
-    const nm = _normName(m.name);
-    if (!nm || haveMovie.has(nm)) continue;
-    userState.customMovies.push({ name: m.name, releaseDate: m.releaseDate || '', runtime: m.runtime || 0, status: 'towatch', addedAt: now });
-    haveMovie.add(nm); addedMovies++;
+    const nm = _normName(m.name); if (!nm) continue;
+    if ((m.tmdbId != null && haveMovieTmdb.has(String(m.tmdbId))) || haveMovieName.has(nm)) continue;
+    userState.customMovies.push({ name: m.name, releaseDate: m.releaseDate || '', runtime: m.runtime || 0, status: 'towatch', custom: true, addedAt: now });
+    if (m.tmdbId != null) haveMovieTmdb.add(String(m.tmdbId));
+    haveMovieName.add(nm); addedMovies++;
   }
-  await persistDataOverride(DATA);
   scheduleSaveState();
   MODEL = null;
   render();
