@@ -10,9 +10,16 @@ const DEFAULT_RUNTIME = 42; // minutes, fallback when unknown
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 11, date: '25 août 2026', title: 'Partager sa liste', items: [
+    'Partagez votre liste de séries et films à quelqu\'un, <b>sans votre historique</b> : rien n\'est marqué comme vu chez lui (Réglages → Partager ma liste).',
+    'À la réception, la liste reçue s\'ajoute à la sienne sans écraser ni dupliquer ce qu\'il a déjà.',
+  ] },
+  { id: 10, date: '25 août 2026', title: 'Glissement entre catégories', items: [
+    'Le changement de catégorie joue une petite animation de glissement.',
+  ] },
   { id: 9, date: '25 août 2026', title: 'Navigation & confort', items: [
     'Changez de catégorie d\'un simple glissement (swipe) : Séries · Films · Explorer · Profil.',
-    'Transition animée : l\'ancienne page glisse sur le côté pendant que la nouvelle apparaît.',
+    'Le glissement suit votre doigt en direct : la page bouge avec vous, et revient en place si vous ne glissez pas assez.',
     'Une fenêtre « Nouveautés » vous résume les changements à la première ouverture après une mise à jour.',
     'Sur iPhone : le double-appui ne zoome plus par accident.',
     'Sur iPhone : la barre des catégories reste fixée tout en bas, sans à-coups.',
@@ -822,7 +829,7 @@ function openMovie(name) {
 const BACK_LABELS = { home: 'Séries', library: 'Bibliothèque', upnext: 'À suivre', explore: 'Explorer', movies: 'Films', lists: 'Listes', stats: 'Statistiques', profile: 'Profil', settings: 'Réglages', changelog: 'Notes de version' };
 function backLabel() { return BACK_LABELS[(backTarget || '').replace(/^#\//, '').split('/')[0]] || 'Retour'; }
 
-// Slide transition when moving from one main category to another (swipe/tap).
+// Basic slide transition when moving from one main category to another.
 let _lastTopRoute = null;
 function _makeSnapshot() {
   const el = document.getElementById('app');
@@ -839,7 +846,7 @@ function _runSlide(el, snapObj, dir) {
   const { snap, sy } = snapObj;
   const from = dir > 0 ? '100%' : '-100%';   // new page enters from this side
   const to = dir > 0 ? '-100%' : '100%';     // old page leaves to this side
-  const dur = 260;
+  const dur = 240;
   el.classList.add('page-anim');
   el.style.transition = 'none';
   el.style.transform = `translateX(${from})`;
@@ -854,6 +861,7 @@ function _runSlide(el, snapObj, dir) {
   }, dur + 40);
 }
 async function render() {
+  document.querySelectorAll('.page-snap').forEach(n => n.remove()); // safety: never leave a frozen page behind
   const [name, ...rest] = currentRoute().split('/');
   if (name !== 'show' && name !== 'movie') backTarget = location.hash || '#/home';
   if (name !== 'show') lastShowKey = null; // re-opening a show counts as a fresh visit
@@ -868,6 +876,7 @@ async function render() {
   }
   _lastTopRoute = newTop;
   const el = document.getElementById('app');
+  el.style.transition = ''; el.style.transform = ''; el.classList.remove('page-anim');
   const snapObj = dir !== 0 ? _makeSnapshot() : null;
   const fn = routes[name] || routes['library'];
   el.innerHTML = '<div class="loading">Chargement…</div>';
@@ -1832,14 +1841,14 @@ document.addEventListener('click', (e) => {
   if (card && !(e.target.closest && e.target.closest('button'))) { e.stopPropagation(); e.preventDefault(); }
 }, true);
 
-// ---- Swipe left/right to move between the main categories ----
+// ---- Swipe left/right to move between the main categories (basic version:
+//      detected on release, the page change plays the standard slide). ----
 const SWIPE_ROUTES = ['home', 'movies', 'explore', 'profile'];
 let _swX = 0, _swY = 0, _swOn = false;
 document.addEventListener('touchstart', (e) => {
   _swOn = false;
   if (e.touches.length !== 1) return;
   const t = e.target;
-  // Leave horizontal scrollers, inputs and open modals alone.
   if (t.closest && t.closest('.cast-list, .sort-chips, .pv-seasons, .react, input, textarea, select')) return;
   if (document.getElementById('modalRoot') && document.getElementById('modalRoot').children.length) return;
   if (!SWIPE_ROUTES.includes(currentRoute().split('/')[0])) return;
@@ -2853,6 +2862,12 @@ route('settings', async (el) => {
     </div>
 
     <div class="panel">
+      <h3>Partager ma liste</h3>
+      <p class="hint" style="color:var(--muted)">Crée un fichier avec vos séries et films <b>sans l'historique</b> (rien n'est marqué comme vu). La personne qui le reçoit clique sur <b>« Importer »</b> ci-dessus : ses propres œuvres sont <b>conservées</b>, les vôtres viennent s'ajouter (sans doublon).</p>
+      <button class="btn" id="shareBtn">Partager ma liste (sans l'historique)</button>
+    </div>
+
+    <div class="panel">
       <h3>À propos</h3>
       <p class="hint" style="color:var(--muted)"><b>TV Time</b> · version ${APP_VERSION}<br>
       Données importées le ${esc((DATA.generatedAt || '').replace('T', ' '))}. Compte : ${esc(DATA.user?.mail || '')}.<br>
@@ -2870,6 +2885,7 @@ route('settings', async (el) => {
   };
   el.querySelector('#syncAll').onclick = () => syncEverything(el.querySelector('#syncProg'));
   el.querySelector('#exportBtn').onclick = exportData;
+  el.querySelector('#shareBtn').onclick = exportSharedList;
   el.querySelector('#importFile').onchange = importData;
 });
 
@@ -2929,6 +2945,59 @@ function exportData() {
   a.href = URL.createObjectURL(blob); a.download = 'tvtime-sauvegarde-' + new Date().toISOString().slice(0, 10) + '.json';
   a.click();
 }
+const _normName = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+// Export just the LIST of series & movies (no watch history at all), to share
+// with a friend. When imported, nothing is marked as seen.
+function exportSharedList() {
+  const shows = [];
+  for (const s of (DATA.shows || [])) shows.push({ tvdbId: s.tvdbId ?? null, name: s.name });
+  for (const cs of (userState.customShows || [])) shows.push({ tmdbId: cs.tmdbId ?? null, name: cs.name, poster: cs.poster || null });
+  const movies = [];
+  for (const m of (DATA.movies || [])) movies.push({ name: m.name, releaseDate: m.releaseDate || '', runtime: m.runtime || 0 });
+  for (const cm of (userState.customMovies || [])) movies.push({ name: cm.name, releaseDate: cm.releaseDate || '', runtime: cm.runtime || 0 });
+  const payload = { format: 'tvtime-sharedlist', exportedAt: new Date().toISOString(), shows, movies };
+  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'tvtime-liste-' + new Date().toISOString().slice(0, 10) + '.json';
+  a.click();
+  toast(`Liste exportée : ${shows.length} série(s), ${movies.length} film(s)`);
+}
+// Merge a shared list into MY data WITHOUT overwriting anything I already have,
+// and WITHOUT marking anything as seen.
+async function mergeSharedList(parsed) {
+  DATA.shows = Array.isArray(DATA.shows) ? DATA.shows : [];
+  DATA.movies = Array.isArray(DATA.movies) ? DATA.movies : [];
+  userState.customShows = userState.customShows || [];
+  userState.customMovies = userState.customMovies || [];
+  const haveTvdb = new Set(DATA.shows.map(s => String(s.tvdbId)));
+  const haveShowName = new Set(DATA.shows.map(s => _normName(s.name)).concat((userState.customShows).map(s => _normName(s.name))));
+  const haveMovie = new Set(DATA.movies.map(m => _normName(m.name)).concat((userState.customMovies).map(m => _normName(m.name))));
+  let addedShows = 0, addedMovies = 0;
+  const now = new Date().toISOString();
+  for (const s of (parsed.shows || [])) {
+    const nm = _normName(s.name);
+    if (!nm) continue;
+    if ((s.tvdbId != null && haveTvdb.has(String(s.tvdbId))) || haveShowName.has(nm)) continue;
+    if (s.tvdbId == null && s.tmdbId != null) {
+      userState.customShows.push({ key: 'tmdb:' + s.tmdbId, tmdbId: s.tmdbId, name: s.name, poster: s.poster || null, addedAt: now });
+    } else {
+      DATA.shows.push({ tvdbId: s.tvdbId ?? null, name: s.name, followed: true, nbEpisodesSeen: 0, showRating: null, favorited: false, archived: false, createdAt: now });
+      if (s.tvdbId != null) haveTvdb.add(String(s.tvdbId));
+    }
+    haveShowName.add(nm); addedShows++;
+  }
+  for (const m of (parsed.movies || [])) {
+    const nm = _normName(m.name);
+    if (!nm || haveMovie.has(nm)) continue;
+    userState.customMovies.push({ name: m.name, releaseDate: m.releaseDate || '', runtime: m.runtime || 0, status: 'towatch', addedAt: now });
+    haveMovie.add(nm); addedMovies++;
+  }
+  await persistDataOverride(DATA);
+  scheduleSaveState();
+  MODEL = null;
+  render();
+  toast(`Ajouté : ${addedShows} série(s), ${addedMovies} film(s)`);
+}
 // Replace the in-memory catalogue in place (DATA is a const reference).
 function applyDataObject(obj) {
   for (const k of Object.keys(DATA)) delete DATA[k];
@@ -2949,6 +3018,11 @@ function importData(ev) {
   r.onload = async () => {
     try {
       const parsed = JSON.parse(r.result);
+      if (parsed && parsed.format === 'tvtime-sharedlist') {
+        // Liste partagée par un ami : on fusionne sans rien écraser ni marquer vu.
+        await mergeSharedList(parsed);
+        return;
+      }
       const cat = parsed && parsed.data && (parsed.data.shows || parsed.data.seen) ? parsed.data : null;
       if (cat) {
         // Sauvegarde complète : restaure le catalogue (historique) durablement.

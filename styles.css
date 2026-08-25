@@ -81,12 +81,9 @@ main {
 }
 .loading { color: var(--muted); padding: 60px; text-align: center; }
 
-/* Slide transition between the main categories */
-.page-snap {
-  position: fixed; left: 0; right: 0; top: 0; height: 100dvh; z-index: 30;
-  overflow: hidden; pointer-events: none; will-change: transform;
-}
+/* Basic category slide transition */
 .page-anim { will-change: transform; }
+.page-snap { position: fixed; left: 0; right: 0; top: 0; height: 100dvh; z-index: 30; overflow: hidden; pointer-events: none; will-change: transform; }
 .page-head { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
 .page-head h1 { font-size: 24px; margin: 0; }
 .page-head .sub { color: var(--muted); font-size: 13px; }
