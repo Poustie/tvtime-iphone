@@ -10,6 +10,12 @@ const DEFAULT_RUNTIME = 42; // minutes, fallback when unknown
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 13, date: '3 septembre 2026', title: 'Saisons des animes', items: [
+    'Les animes que la base TMDB range en une seule grande saison (numérotation continue) sont maintenant redécoupés en vraies saisons à l\'écran (ex. Rent-a-Girlfriend).',
+  ] },
+  { id: 12, date: '2 septembre 2026', title: 'Correction « Terminée »', items: [
+    'Une série dont vous avez vu tous les épisodes passe maintenant bien dans « Terminée » — même si elle était épinglée « En cours » ou encore en diffusion.',
+  ] },
   { id: 11, date: '25 août 2026', title: 'Partager sa liste', items: [
     'Partagez votre liste de séries et films à quelqu\'un, <b>sans votre historique</b> : rien n\'est marqué comme vu chez lui (Réglages → Partager ma liste).',
     'À la réception, la liste s\'ajoute à la sienne <b>sans doublon</b> (même s\'il a déjà vu l\'œuvre) et <b>sans écraser</b> ce qu\'il a déjà.',
@@ -1256,7 +1262,8 @@ async function renderSeriesAvoir(el, shows) {
     const newSinceSeen = m && m.lastAir && daysSince(m.lastAir) <= NEW_EPISODE_DAYS
       && !done && (isNaN(lastSeenT) || lastAirT > lastSeenT);
     const pinned = isPinnedWatching(s);
-    if (done && !newEp && !pinned) { finished.push(s); continue; }
+    // Tout vu = Terminée : une série épinglée ou avec un épisode récent déjà vu ne reste pas « En cours ».
+    if (done) { finished.push(s); continue; }
     if (pinned || newEp || newSinceSeen || daysSince(s.lastSeenAt) <= ACTIVE_DAYS) watching.push(s);
     else if (s.followed) stale.push(s);
   }
@@ -1993,33 +2000,71 @@ function offlineSeasons(sh) {
     seasons.map(s => `<div class="season-head"><h3>Saison ${s}</h3><span class="count">${bySeason[s].size} épisode(s)</span></div>`).join('');
 }
 
+// Split a season's episodes into groups whenever there is a very long gap
+// between consecutive air dates. Some anime are stored on TMDB as ONE season
+// with continuous numbering spanning several years — this recovers the real
+// broadcast seasons (cours) for display.
+function splitByAirGaps(eps, thrDays) {
+  const groups = []; let cur = []; let prev = null;
+  for (const e of eps) {
+    if (e.air) {
+      const t = Date.parse(String(e.air).replace(' ', 'T'));
+      if (!isNaN(t)) {
+        if (prev != null && (t - prev) > thrDays * 86400000) { if (cur.length) groups.push(cur); cur = []; }
+        prev = t;
+      }
+    }
+    cur.push(e);
+  }
+  if (cur.length) groups.push(cur);
+  return groups;
+}
+
 async function renderSeasons(container, sh, tmdbId, meta, fresh) {
   container.innerHTML = '';
   // Merge TMDB seasons with any user-added (custom) seasons/episodes.
   const custom = customEpsForShow(sh);
   const customBySeason = {};
   for (const e of custom) (customBySeason[e.s] = customBySeason[e.s] || []).push(e);
-  const tmdbCount = {};
-  for (const s of (meta ? meta.seasons : [])) tmdbCount[s.n] = s.count;
-  const seasonNums = new Set();
-  for (const s of (meta ? meta.seasons : [])) seasonNums.add(s.n);
+  const metaSeasons = meta ? meta.seasons : [];
+  const tmdbSeasonNums = new Set(metaSeasons.map(s => s.n));
+  const seasonNums = new Set(tmdbSeasonNums);
   for (const s of Object.keys(customBySeason)) seasonNums.add(Number(s));
   const sorted = Array.from(seasonNums).sort((a, b) => a - b);
 
-  // Ordered episode lists per season, filled as seasons load (used to offer
-  // "mark all previous episodes" when a mid-season episode is checked).
-  const seasonEps = {};
+  const buildEpsForSeason = async (sn) => {
+    let eps = [];
+    if (tmdbId && tmdbSeasonNums.has(sn)) { try { eps = await getSeasonEpisodes(tmdbId, sn); } catch { eps = []; } }
+    const present = new Set(eps.map(e => e.n));
+    const customEps = (customBySeason[sn] || []).filter(e => !present.has(e.n))
+      .map(e => ({ n: e.n, name: e.name, air: null, custom: true }));
+    return eps.concat(customEps).sort((a, b) => a.n - b.n);
+  };
+
+  // Display blocks: normally one per season. For a single-season anime with big
+  // air-date gaps, split it into visual seasons.
+  const blocks = []; // { sn, label, eps }
+  if (metaSeasons.length === 1 && sorted.length === 1 && sorted[0] > 0) {
+    const sn = sorted[0];
+    const all = await buildEpsForSeason(sn);
+    const groups = splitByAirGaps(all, 120);
+    if (groups.length > 1) groups.forEach((g, i) => blocks.push({ sn, label: 'Saison ' + (i + 1), eps: g }));
+    else blocks.push({ sn, label: 'Saison ' + sn, eps: all });
+  } else {
+    for (const sn of sorted) blocks.push({ sn, label: 'Saison ' + sn, eps: null }); // fetched lazily below
+  }
+
+  // Flat list of rendered episodes, used to offer "mark all previous episodes".
+  const renderedEps = [];
   const getPrevUnseen = (season, n) => {
     if (season === 0) return []; // don't chain from specials
     const out = [];
-    for (const sn2 of sorted) {
-      if (sn2 === 0 || sn2 > season) continue;
-      for (const e of (seasonEps[sn2] || [])) {
-        const before = sn2 < season || (sn2 === season && e.n < n);
-        if (!before) continue;
-        const aired = !e.air || new Date(e.air) <= new Date();
-        if (aired && !isSeen(sh, sn2, e.n)) out.push({ season: sn2, n: e.n });
-      }
+    for (const e of renderedEps) {
+      if (e.season === 0) continue;
+      const before = e.season < season || (e.season === season && e.n < n);
+      if (!before) continue;
+      const aired = !e.air || new Date(e.air) <= new Date();
+      if (aired && !isSeen(sh, e.season, e.n)) out.push({ season: e.season, n: e.n });
     }
     return out;
   };
@@ -2033,21 +2078,17 @@ async function renderSeasons(container, sh, tmdbId, meta, fresh) {
     const p = k.split('|'); const S = +p[p.length - 2], N = +p[p.length - 1];
     if (S > lastSeenS || (S === lastSeenS && N > lastSeenN)) { lastSeenS = S; lastSeenN = N; }
   }
-  for (const sn of sorted) {
-    const secId = 'sea_' + sn;
-    const seenInSeason = () => Array.from(sh.seenKeys).filter(k => k.split('|')[1] == sn).length;
-
-    let eps = [];
-    if (tmdbId && tmdbCount[sn] != null) { try { eps = await getSeasonEpisodes(tmdbId, sn); } catch { eps = []; } }
-    const present = new Set(eps.map(e => e.n));
-    const customEps = (customBySeason[sn] || []).filter(e => !present.has(e.n))
-      .map(e => ({ n: e.n, name: e.name, air: null, custom: true }));
-    const all = eps.concat(customEps).sort((a, b) => a.n - b.n);
+  let blockIdx = 0;
+  for (const block of blocks) {
+    const sn = block.sn;
+    const secId = 'sea_' + (blockIdx++);
+    const all = block.eps != null ? block.eps : await buildEpsForSeason(sn);
     const total = all.length;
-    seasonEps[sn] = all;
+    for (const e of all) renderedEps.push({ season: sn, n: e.n, air: e.air });
+    const seenInBlock = () => all.filter(e => isSeen(sh, sn, e.n)).length;
     const airedEps = () => all.filter(e => !e.air || new Date(e.air) <= new Date());
 
-    // Expand the season holding the resume point (first aired unseen episode that
+    // Expand the block holding the resume point (first aired unseen episode that
     // comes after the last watched one).
     const firstUnseen = all.find(e => (!e.air || new Date(e.air) <= new Date()) && !isSeen(sh, sn, e.n)
       && (sn > lastSeenS || (sn === lastSeenS && e.n > lastSeenN)));
@@ -2057,13 +2098,13 @@ async function renderSeasons(container, sh, tmdbId, meta, fresh) {
 
     const head = document.createElement('div');
     head.className = 'season-head' + (expand ? '' : ' collapsed');
-    head.innerHTML = `<span class="caret">▸</span><h3>Saison ${sn}</h3><span class="count" id="${secId}_c">${seenInSeason()} / ${total}</span> <div class="markall-group"><button class="btn sm ghost markall-seen">Tout vu</button><button class="btn sm ghost markall-unseen">Tout non vu</button></div>`;
+    head.innerHTML = `<span class="caret">▸</span><h3>${esc(block.label)}</h3><span class="count" id="${secId}_c">${seenInBlock()} / ${total}</span> <div class="markall-group"><button class="btn sm ghost markall-seen">Tout vu</button><button class="btn sm ghost markall-unseen">Tout non vu</button></div>`;
     container.appendChild(head);
 
     const body = document.createElement('div');
-    body.id = secId; body.className = 'season-body' + (expand ? '' : ' collapsed'); container.appendChild(body);
+    body.id = secId; body.className = 'season-body' + (expand ? '' : ' collapsed'); body.dataset.season = sn; container.appendChild(body);
 
-    const updateCount = () => { const c = document.getElementById(secId + '_c'); if (c) c.textContent = `${seenInSeason()} / ${total}`; };
+    const updateCount = () => { const c = document.getElementById(secId + '_c'); if (c) c.textContent = `${seenInBlock()} / ${total}`; };
     const buildBody = () => {
       body.innerHTML = all.map(e => epHtml(sh, sn, e)).join('') +
         `<button class="btn sm ghost add-ep" data-season="${sn}">➕ Ajouter un épisode à la saison ${sn}</button>`;
@@ -2099,7 +2140,7 @@ async function renderSeasons(container, sh, tmdbId, meta, fresh) {
       buildBody(); updateSyncStatus();
       if (!wasComplete && isShowComplete(sh)) celebrateCompletion(sh);
     };
-    // "Tout non vu": clear seen AND rewatch counts for the whole season. Stays in place.
+    // "Tout non vu": clear seen AND rewatch counts for the whole block. Stays in place.
     head.querySelector('.markall-unseen').onclick = (ev) => {
       ev.stopPropagation();
       all.forEach(e => {
@@ -2264,17 +2305,13 @@ function offerMarkPrevious(sh, prevList, season, n) {
       root.querySelector('#mpGo').onclick = () => {
         prevList.forEach(p => toggleSeen(sh, p.season, p.n, true));
         // Update the affected rows in place so the page doesn't jump back to the top.
-        const seasons = new Set();
         prevList.forEach(p => {
-          seasons.add(p.season);
-          const body = document.getElementById('sea_' + p.season);
-          const row = body && body.querySelector('.ep[data-n="' + p.n + '"]');
+          const row = document.querySelector('.season-body[data-season="' + p.season + '"] .ep[data-n="' + p.n + '"]');
           if (row) { row.classList.add('seen'); const ck = row.querySelector('.check'); if (ck) ck.classList.add('on'); }
         });
-        seasons.forEach(sn => {
-          const body = document.getElementById('sea_' + sn);
-          const c = document.getElementById('sea_' + sn + '_c');
-          if (body && c) c.textContent = body.querySelectorAll('.ep.seen').length + ' / ' + body.querySelectorAll('.ep').length;
+        document.querySelectorAll('.season-body[data-season]').forEach(body => {
+          const c = document.getElementById(body.id + '_c');
+          if (c) c.textContent = body.querySelectorAll('.ep.seen').length + ' / ' + body.querySelectorAll('.ep').length;
         });
         updateSyncStatus();
         closeModal();
