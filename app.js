@@ -10,6 +10,10 @@ const DEFAULT_RUNTIME = 42; // minutes, fallback when unknown
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 14, date: '11 septembre 2026', title: 'Fiches épisodes & fond noir', items: [
+    'Chaque épisode a maintenant sa fiche : touchez le nom d\'un épisode pour voir son synopsis, sa date de diffusion, sa durée, la note du public, ses invités — et le marquer vu / le noter / y réagir.',
+    'Nouveau réglage « Fond totalement noir (AMOLED) » pour les écrans OLED (Réglages → Affichage).',
+  ] },
   { id: 13, date: '3 septembre 2026', title: 'Saisons des animes', items: [
     'Les animes que la base TMDB range en une seule grande saison (numérotation continue) sont maintenant redécoupés en vraies saisons à l\'écran (ex. Rent-a-Girlfriend).',
   ] },
@@ -120,9 +124,10 @@ let userState = {
   userLists: [],   // [{id,name,shows:[key],movies:[name]}] listes personnalisables
   lists: null,     // null = use baseline lists; else array
   seenChangelog: 0, // id de la dernière note de version vue (pop-up « nouveautés »)
+  amoled: false, // fond totalement noir (écrans AMOLED)
 };
 // tmdbCache = metadata cache (persisted to tmdb-cache.json)
-let tmdbCache = { map: {}, shows: {}, seasons: {}, movies: {}, movieMeta: {} };
+let tmdbCache = { map: {}, shows: {}, seasons: {}, movies: {}, movieMeta: {}, episodes: {} };
 
 let MODEL = null; // built show model
 
@@ -425,6 +430,21 @@ async function getSeasonEpisodes(tmdbId, seasonNumber) {
   }));
   tmdbCache.seasons[ck] = eps; scheduleSaveCache();
   return eps;
+}
+
+// Full detail for one episode (synopsis, air date, runtime, public rating, guests).
+async function getEpisodeMeta(tmdbId, season, n, force) {
+  if (!tmdbCache.episodes) tmdbCache.episodes = {};
+  const ck = tmdbId + '|' + season + '|' + n;
+  if (!force && tmdbCache.episodes[ck] && 'vote' in tmdbCache.episodes[ck]) return tmdbCache.episodes[ck];
+  const d = await tmdbFetch(`/tv/${tmdbId}/season/${season}/episode/${n}`);
+  const meta = {
+    name: d.name, overview: d.overview, air: d.air_date, runtime: d.runtime,
+    still: d.still_path, vote: d.vote_average || null, voteCount: d.vote_count || 0,
+    guests: (d.guest_stars || []).slice(0, 12).map(c => ({ name: c.name, character: c.character || '', profile: c.profile_path || null })),
+  };
+  tmdbCache.episodes[ck] = meta; scheduleSaveCache();
+  return meta;
 }
 
 async function getShowMeta(tmdbId, force) {
@@ -833,6 +853,10 @@ function openMovie(name) {
   scrollByHash[location.hash || '#/movies'] = window.scrollY;
   location.hash = '#/movie/' + encodeURIComponent(name);
 }
+function openEpisode(showKey, season, n) {
+  scrollByHash[location.hash || '#/home'] = window.scrollY;
+  location.hash = '#/episode/' + encodeURIComponent(showKey) + '/' + season + '/' + n;
+}
 const BACK_LABELS = { home: 'Séries', library: 'Bibliothèque', upnext: 'À suivre', explore: 'Explorer', movies: 'Films', lists: 'Listes', stats: 'Statistiques', profile: 'Profil', settings: 'Réglages', changelog: 'Notes de version' };
 function backLabel() { return BACK_LABELS[(backTarget || '').replace(/^#\//, '').split('/')[0]] || 'Retour'; }
 
@@ -870,8 +894,8 @@ function _runSlide(el, snapObj, dir) {
 async function render() {
   document.querySelectorAll('.page-snap').forEach(n => n.remove()); // safety: never leave a frozen page behind
   const [name, ...rest] = currentRoute().split('/');
-  if (name !== 'show' && name !== 'movie') backTarget = location.hash || '#/home';
-  if (name !== 'show') lastShowKey = null; // re-opening a show counts as a fresh visit
+  if (name !== 'show' && name !== 'movie' && name !== 'episode') backTarget = location.hash || '#/home';
+  if (name !== 'show' && name !== 'episode') lastShowKey = null; // re-opening a show counts as a fresh visit
   // Library / stats / lists / settings live under the "Profil" tab.
   const navName = ['library', 'stats', 'lists', 'settings', 'changelog'].includes(name) ? 'profile' : (name === 'preview' ? 'explore' : name);
   document.querySelectorAll('.bottom-nav a').forEach(a => a.classList.toggle('active', a.dataset.route === navName));
@@ -889,7 +913,7 @@ async function render() {
   el.innerHTML = '<div class="loading">Chargement…</div>';
   try { await fn(el, rest); } catch (e) { el.innerHTML = `<div class="empty"><div class="big">⚠️</div>${esc(e.message)}</div>`; }
   const saved = scrollByHash[location.hash];
-  window.scrollTo(0, name !== 'show' && name !== 'movie' && saved ? saved : 0);
+  window.scrollTo(0, name !== 'show' && name !== 'movie' && name !== 'episode' && saved ? saved : 0);
   if (snapObj) _runSlide(el, snapObj, dir);
 }
 window.addEventListener('hashchange', render);
@@ -1989,6 +2013,96 @@ route('show', async (el, rest) => {
   if (meta) await renderSeasons(el.querySelector('#seasons'), sh, tmdbId, meta, fresh);
 });
 
+//////////////////////// Episode detail ////////////////////////
+route('episode', async (el, rest) => {
+  buildModel();
+  const showKey = decodeURIComponent(rest[0] || '');
+  const season = parseInt(rest[1], 10);
+  const n = parseInt(rest[2], 10);
+  const sh = MODEL.shows.get(showKey);
+  if (!sh || !isFinite(season) || !isFinite(n)) { el.innerHTML = `<div class="empty">Épisode introuvable.</div>`; return; }
+
+  let ep = null, tmdbId = null;
+  if (hasKey()) {
+    tmdbId = overrideShowTmdb(sh) || (sh.tvdbId ? await resolveTmdbId(sh.tvdbId) : null);
+    if (tmdbId) { try { ep = await getEpisodeMeta(tmdbId, season, n); } catch {} }
+  }
+  if (!ep && tmdbId && tmdbCache.seasons[tmdbId + '|' + season]) {
+    ep = (tmdbCache.seasons[tmdbId + '|' + season] || []).find(e => e.n === n) || null;
+  }
+
+  const k = epKey(sh.key, season, n);
+  const seen = sh.seenKeys.has(k);
+  const rating = MODEL.ratingMap.get(k) || 0;
+  const emo = MODEL.emotionMap.get(k);
+  const rw = MODEL.rewatchMap.get(k) || 0;
+  const title = (ep && ep.name) || ('Épisode ' + n);
+  const overviewTxt = ep ? (ep.overview || 'Pas de synopsis disponible pour cet épisode.') : (hasKey() ? 'Détails indisponibles.' : 'Ajoutez une clé TMDB (Réglages) pour voir les détails de l\'épisode.');
+  const rows = [
+    infoRow('Diffusion', ep && ep.air ? fmtFull(ep.air) : ''),
+    infoRow('Durée', ep && ep.runtime ? `${ep.runtime} min` : ''),
+    infoRow('Note du public', ep && ep.vote ? `⭐ ${ep.vote.toFixed(1)}/10 <span class="muted">(${ep.voteCount})</span>` : ''),
+  ].join('');
+  const guestsHtml = (ep && ep.guests && ep.guests.length)
+    ? `<div class="about" style="margin-top:16px"><div class="about-block"><h3>Invités</h3><div class="cast-list">${ep.guests.map(c => `<div class="cast-item"><div class="cast-photo">${c.profile ? `<img loading="lazy" src="${IMG(c.profile, 'w185')}" alt="">` : `<span>${esc((c.name || '?').slice(0, 1))}</span>`}</div><div class="cast-name">${esc(c.name)}</div>${c.character ? `<div class="cast-char">${esc(c.character)}</div>` : ''}</div>`).join('')}</div></div></div>`
+    : '';
+
+  el.innerHTML = `
+    <a class="btn ghost sm" href="#/show/${encodeURIComponent(sh.key)}">← ${esc(displayName(sh))}</a>
+    <div class="detail-hero ep-hero" style="margin-top:12px">
+      <div class="inner">
+        <div class="ep-still">${ep && ep.still ? `<img src="${IMG(ep.still, 'w300')}" alt="">` : `<div class="ep-still-ph">${season}×${String(n).padStart(2, '0')}</div>`}</div>
+        <div>
+          <h1>${esc(title)}</h1>
+          <div class="sub">Saison ${season} · Épisode ${n}</div>
+          <div class="detail-actions">
+            <button class="btn ${seen ? 'primary' : ''}" id="epSeen">${seen ? '✓ Vu' : 'Marquer comme vu'}</button>
+            <button class="btn" id="epRw">🔁 +1 visionnage${rw > 0 ? ` (×${rw + 1})` : ''}</button>
+          </div>
+          <div class="ep-react">
+            <span class="react-label">Ma note</span>
+            <div class="stars" data-id="epRate">${[1, 2, 3, 4, 5].map(v => `<span class="s ${v <= rating ? 'on' : ''}" data-v="${v}">★</span>`).join('')}<button type="button" class="star-clear" title="Retirer ma note"${rating > 0 ? '' : ' hidden'}>✕</button></div>
+            <span class="react-label">Ma réaction</span>
+            <div class="react" data-act="emo">${EMOTIONS.slice(0, 5).map(em => `<button data-e="${em.id}" title="${esc(em.label)}" class="${emo === em.id ? 'on' : ''}">${em.emoji}</button>`).join('')}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="about" style="margin-top:16px">
+      <div class="about-block"><h3>Synopsis</h3><p class="synopsis-text">${esc(overviewTxt)}</p></div>
+      ${infoBlock(rows)}
+    </div>
+    ${guestsHtml}`;
+
+  el.querySelector('#epSeen').onclick = () => {
+    const wasComplete = isShowComplete(sh);
+    toggleSeen(sh, season, n);
+    const now = sh.seenKeys.has(k);
+    const b = el.querySelector('#epSeen');
+    b.classList.toggle('primary', now); b.textContent = now ? '✓ Vu' : 'Marquer comme vu';
+    updateSyncStatus();
+    if (now && !wasComplete && isShowComplete(sh)) celebrateCompletion(sh);
+  };
+  el.querySelector('#epRw').onclick = () => {
+    setRewatch(sh, season, n, rewatchOf(sh, season, n) + 1);
+    const c = rewatchOf(sh, season, n);
+    el.querySelector('#epRw').textContent = `🔁 +1 visionnage${c > 0 ? ` (×${c + 1})` : ''}`;
+    updateSyncStatus();
+  };
+  el.querySelector('.stars[data-id="epRate"]').addEventListener('click', (ev) => {
+    const clr = ev.target.closest('.star-clear'); const s = ev.target.closest('.s');
+    if (!clr && !s) return;
+    setRating(sh, season, n, clr ? 0 : parseInt(s.dataset.v, 10));
+    updateStarsUI(el.querySelector('.stars[data-id="epRate"]'), MODEL.ratingMap.get(k) || 0);
+  });
+  el.querySelector('.ep-react .react[data-act="emo"]').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button'); if (!btn) return;
+    setEmotion(sh, season, n, btn.dataset.e);
+    const cur = MODEL.emotionMap.get(k);
+    ev.currentTarget.querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.e === cur));
+  });
+});
+
 function offlineSeasons(sh) {
   // Build seasons from the seen keys + user-added episodes (no TMDB)
   const bySeason = {};
@@ -2169,7 +2283,7 @@ function epHtml(sh, season, e) {
   return `<div class="ep ${seen ? 'seen' : ''} ${e.custom ? 'custom' : ''}" data-n="${e.n}">
     <div class="check ${seen ? 'on' : ''}" data-act="seen">✓</div>
     <div class="num">${season}×${String(e.n).padStart(2, '0')}</div>
-    <div class="epname">${esc(e.name || 'Épisode ' + e.n)}${e.custom ? ' <span class="tag-custom">ajouté</span>' : ''}<small>${e.air ? esc(e.air) : ''}${!aired && e.air ? ' · à venir' : ''}</small></div>
+    <div class="epname" data-act="open">${esc(e.name || 'Épisode ' + e.n)}${e.custom ? ' <span class="tag-custom">ajouté</span>' : ''}<small>${e.air ? esc(e.air) : ''}${!aired && e.air ? ' · à venir' : ''}</small></div>
     <div class="rw ${rw > 0 ? 'on' : ''}" data-act="rw" title="Visionnages — clic : +1, clic droit : −1">🔁<span class="rw-n">${rw > 0 ? '×' + (rw + 1) : ''}</span></div>
     <div class="stars" data-act="rate">${[1, 2, 3, 4, 5].map(v => `<span class="s ${v <= rating ? 'on' : ''}" data-v="${v}">★</span>`).join('')}<button type="button" class="star-clear" title="Retirer ma note"${rating > 0 ? '' : ' hidden'}>✕</button></div>
     <div class="react" data-act="emo">${EMOTIONS.slice(0, 5).map(em => `<button data-e="${em.id}" title="${em.label}" class="${emo === em.id ? 'on' : ''}">${em.emoji}</button>`).join('')}</div>
@@ -2291,6 +2405,8 @@ function wireEpisodes(container, sh, season, onChange, opts) {
     };
     const del = row.querySelector('[data-act="delcustom"]');
     if (del) del.onclick = () => { removeCustomEpisode(sh, season, n); render(); };
+    const nameEl = row.querySelector('.epname[data-act="open"]');
+    if (nameEl) nameEl.onclick = () => openEpisode(sh.key, season, n);
   });
 }
 
@@ -2872,6 +2988,13 @@ route('settings', async (el) => {
       </div>
     </div>
     <div class="panel">
+      <h3>Affichage</h3>
+      <label class="check-row" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+        <input type="checkbox" id="amoledToggle" ${userState.amoled ? 'checked' : ''} style="margin-top:3px">
+        <span>Fond totalement noir (AMOLED)<span class="hint" style="display:block;color:var(--muted)">Idéal pour les écrans OLED : économise la batterie et n'allume pas les pixels inutiles.</span></span>
+      </label>
+    </div>
+    <div class="panel">
       <div class="settings-field">
         <label>Clé API TMDB</label>
         <input class="input" id="tmdbKey" placeholder="Collez votre clé API TMDB (v3)" value="${esc(userState.tmdbKey)}">
@@ -2917,6 +3040,7 @@ route('settings', async (el) => {
     </div>`;
 
   el.querySelector('#saveName').onclick = () => { userState.profileName = el.querySelector('#profileName').value.trim(); scheduleSaveState(); el.querySelector('#nameStatus').textContent = '✅ Enregistré'; toast('Nom enregistré'); };
+  el.querySelector('#amoledToggle').onchange = (e) => { userState.amoled = e.target.checked; scheduleSaveState(); applyTheme(); };
   el.querySelector('#saveKey').onclick = () => { userState.tmdbKey = el.querySelector('#tmdbKey').value.trim(); scheduleSaveState(); updateSyncStatus(); toast('Clé enregistrée'); };
   el.querySelector('#testKey').onclick = async () => {
     const st = el.querySelector('#keyStatus'); st.textContent = 'Test…';
@@ -3153,6 +3277,10 @@ function updateSyncStatus() {
   if (!el) return;
   el.textContent = hasKey() ? 'TMDB ✓' : 'Hors-ligne';
 }
+// True-black background for AMOLED screens.
+function applyTheme() {
+  document.documentElement.classList.toggle('amoled', !!userState.amoled);
+}
 
 //////////////////////// Boot ////////////////////////
 (async function boot() {
@@ -3190,6 +3318,7 @@ function updateSyncStatus() {
 
   applyTmdbOverrides();
   updateSyncStatus();
+  applyTheme();
   if (!location.hash) location.hash = '#/home';
   render();
   maybeShowChangelogPopup();

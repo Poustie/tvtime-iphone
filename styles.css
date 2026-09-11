@@ -263,6 +263,25 @@ main {
 .ep .num { font-variant-numeric: tabular-nums; color: var(--muted); width: 44px; font-size: 13px; flex: none; }
 .ep .epname { flex: 1; font-size: 14px; }
 .ep .epname small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.ep .epname[data-act="open"] { cursor: pointer; }
+.ep .epname[data-act="open"]:hover { color: var(--accent); }
+
+/* Episode detail page */
+.ep-hero { background: transparent; box-shadow: none; min-height: 0; border-radius: 0; overflow: visible; margin-bottom: 0; }
+.ep-hero .inner { padding: 0; align-items: flex-start; }
+.ep-hero .ep-still { width: 240px; max-width: 100%; flex: none; aspect-ratio: 16/9; border-radius: var(--radius); overflow: hidden; background: var(--bg3); box-shadow: var(--shadow); display: flex; align-items: center; justify-content: center; }
+.ep-hero .ep-still img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ep-hero .ep-still-ph { color: var(--muted); font-size: 24px; font-weight: 800; }
+.ep-react { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 10px 0 2px; }
+.ep-react .react-label { color: var(--muted); font-size: 12px; }
+.ep-react .react { display: flex; gap: 6px; }
+.ep-react .react button { font-size: 22px; background: none; border: none; cursor: pointer; opacity: .4; transition: transform .1s, opacity .1s; }
+.ep-react .react button.on { opacity: 1; transform: scale(1.15); }
+.synopsis-text { color: #cbd5e1; font-size: 13.5px; line-height: 1.55; margin: 0; }
+
+/* AMOLED true-black theme */
+html.amoled { --bg: #000; --bg2: #0a0a0a; --bg3: #141414; --card: #0b0b0b; --line: #222; }
+html.amoled .bottom-nav { background: rgba(0,0,0,.94); }
 .ep .react { display: flex; gap: 3px; }
 .ep .react button {
   background: transparent; border: none; cursor: pointer; font-size: 16px; opacity: .35; padding: 2px; border-radius: 6px;
