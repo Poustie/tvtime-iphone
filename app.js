@@ -124,7 +124,7 @@ let userState = {
   userLists: [],   // [{id,name,shows:[key],movies:[name]}] listes personnalisables
   lists: null,     // null = use baseline lists; else array
   seenChangelog: 0, // id de la dernière note de version vue (pop-up « nouveautés »)
-  amoled: false, // fond totalement noir (écrans AMOLED)
+  amoled: true, // fond totalement noir (écrans AMOLED) — activé par défaut
 };
 // tmdbCache = metadata cache (persisted to tmdb-cache.json)
 let tmdbCache = { map: {}, shows: {}, seasons: {}, movies: {}, movieMeta: {}, episodes: {} };
@@ -3279,7 +3279,11 @@ function updateSyncStatus() {
 }
 // True-black background for AMOLED screens.
 function applyTheme() {
-  document.documentElement.classList.toggle('amoled', !!userState.amoled);
+  const amoled = !!userState.amoled;
+  document.documentElement.classList.toggle('amoled', amoled);
+  // La barre d'état du téléphone (heure/batterie) suit cette couleur.
+  const m = document.querySelector('meta[name="theme-color"]');
+  if (m) m.setAttribute('content', amoled ? '#000000' : '#0e1116');
 }
 
 //////////////////////// Boot ////////////////////////
