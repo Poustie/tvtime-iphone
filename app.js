@@ -11,6 +11,9 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 16, date: '18 septembre 2026', title: 'Revisionnage de séries', items: [
+    'Quand vous recommencez une série déjà terminée depuis le début (bouton « 🔁 +1 visionnage » sur le 1er épisode), elle repasse toute seule dans « En cours » avec une barre qui suit votre nouveau visionnage — et revient dans « Terminée » quand vous avez tout revu. (Revoir un épisode isolé au milieu ne la remet pas en cours.)',
+  ] },
   { id: 15, date: '18 septembre 2026', title: 'Reprise des films', items: [
     'Vous avez mis un film en pause en plein milieu ? Indiquez sur sa fiche à quelle minute vous en êtes : une barre de progression apparaît sur son affiche pour reprendre exactement où vous vous étiez arrêté.',
   ] },
@@ -123,6 +126,7 @@ let userState = {
   customShows: [], // [{key,tmdbId,name,poster,addedAt}] shows added by the user (future watch)
   customMovies: [],// [{name,releaseDate,runtime,status,addedAt}] movies added by the user
   pinnedWatching: {}, // showKey -> true : force the show into « En cours » regardless of last-seen date
+  rewatching: {}, // showKey -> true : nouveau visionnage en cours d'une série terminée
   favShows: {},    // showKey -> true/false : override the imported "favori" flag
   favMovies: {},   // movieName -> true : films favoris
   profileName: '', // nom affiché dans « Bonjour … » (paramétrable, override du nom importé)
@@ -805,11 +809,49 @@ function rewatchOf(sh, season, number) {
 function setRewatch(sh, season, number, count) {
   const k = epKey(sh.key, season, number);
   const c = Math.max(0, count | 0);
+  const prev = MODEL.rewatchMap.get(k) || 0;
   if (c > 0) { MODEL.rewatchMap.set(k, c); userState.rewatch[k] = c; }
   else { MODEL.rewatchMap.delete(k); userState.rewatch[k] = 0; }
   // A rewatch implies the episode was seen at least once.
   if (c > 0 && !isSeen(sh, season, number)) toggleSeen(sh, season, number, true);
+  // Revisionnage détecté seulement si on RECOMMENCE depuis le 1er épisode
+  // (voir un épisode isolé au milieu ne remet pas la série « en cours »).
+  if (c > prev && isShowComplete(sh) && isFirstEpisode(sh, season, number)) markRewatching(sh);
   scheduleSaveState();
+}
+// Vrai si (season,number) est le tout premier épisode vu de la série (hors spéciaux).
+function isFirstEpisode(sh, season, number) {
+  let minS = Infinity, minN = Infinity;
+  for (const k of sh.seenKeys) {
+    const p = k.split('|'); const s = +p[p.length - 2], n = +p[p.length - 1];
+    if (s <= 0) continue;
+    if (s < minS || (s === minS && n < minN)) { minS = s; minN = n; }
+  }
+  return season === minS && number === minN;
+}
+function markRewatching(sh) {
+  if (!userState.rewatching) userState.rewatching = {};
+  userState.rewatching[sh.key] = true;
+}
+// Progress of the current re-watch pass (episodes brought to the highest view count).
+function rewatchPass(sh) {
+  const m = metaFor(sh);
+  const total = m && m.totalEpisodes > 0 ? m.totalEpisodes : 0;
+  if (!total) return null;
+  const prefix = sh.key + '|';
+  let level = 0;
+  for (const [k, v] of MODEL.rewatchMap) { if (v > 0 && k.startsWith(prefix) && v > level) level = v; }
+  if (level <= 0) return null;
+  let done = 0;
+  for (const [k, v] of MODEL.rewatchMap) { if (k.startsWith(prefix) && v >= level) done++; }
+  return { level, done, total };
+}
+// A finished show is "being re-watched" while its current pass isn't complete.
+function isRewatching(sh) {
+  if (!userState.rewatching || !userState.rewatching[sh.key]) return false;
+  if (!isShowComplete(sh)) return false;
+  const pass = rewatchPass(sh);
+  return !!(pass && pass.done < pass.total);
 }
 function movieRewatchOf(m) {
   const o = userState.movieRewatch && userState.movieRewatch[m.name];
@@ -1314,9 +1356,10 @@ async function renderSeriesAvoir(el, shows) {
     const newSinceSeen = m && m.lastAir && daysSince(m.lastAir) <= NEW_EPISODE_DAYS
       && !done && (isNaN(lastSeenT) || lastAirT > lastSeenT);
     const pinned = isPinnedWatching(s);
-    // Tout vu = Terminée : une série épinglée ou avec un épisode récent déjà vu ne reste pas « En cours ».
-    if (done) { finished.push(s); continue; }
-    if (pinned || newEp || newSinceSeen || daysSince(s.lastSeenAt) <= ACTIVE_DAYS) watching.push(s);
+    const rewatching = isRewatching(s);
+    // Tout vu = Terminée — sauf si un nouveau visionnage est en cours (revisionnage).
+    if (done && !rewatching) { finished.push(s); continue; }
+    if (rewatching || pinned || newEp || newSinceSeen || daysSince(s.lastSeenAt) <= ACTIVE_DAYS) watching.push(s);
     else if (s.followed) stale.push(s);
   }
   watching.sort((a, b) => (b.lastSeenAt || '').localeCompare(a.lastSeenAt || ''));
@@ -1825,6 +1868,11 @@ function showProgress(s, m) {
   const seen = s.seenKeys.size;
   if (!total || seen <= 0) return null;
   if (seen >= total) {
+    // Un nouveau visionnage en cours -> barre de progression du passage courant.
+    if (isRewatching(s)) {
+      const pass = rewatchPass(s);
+      if (pass) return { pct: Math.max(4, Math.min(99, Math.round(pass.done / pass.total * 100))), cls: 'orange' };
+    }
     const ended = m.status === 'Ended' || m.status === 'Canceled';
     return { pct: 100, cls: ended ? 'purple' : 'green' };
   }
@@ -2002,6 +2050,7 @@ route('show', async (el, rest) => {
           <div class="sub">${meta ? esc((meta.firstAir || '').slice(0, 4)) + (meta.status ? ' · ' + esc(statusFr(meta.status)) : '') : ''} ${genres ? '· ' + esc(genres) : ''}</div>
           <div class="tags">
             <span class="chip">${sh.seenKeys.size} épisode(s) vu(s)${meta && meta.totalEpisodes ? ' / ' + meta.totalEpisodes : ''}</span>
+            ${isRewatching(sh) ? `<span class="chip">🔁 Revisionnage${(function(){ const p = rewatchPass(sh); return p ? ` ${p.done}/${p.total}` : ''; })()}</span>` : ''}
             ${starsHtml('showrate', sh.showRating || 0)}
           </div>
           <div class="overview">${esc(meta ? meta.overview : '')}</div>
@@ -2010,6 +2059,7 @@ route('show', async (el, rest) => {
             <button class="btn ${isFavShow(sh) ? 'primary' : ''}" id="btnFav">${isFavShow(sh) ? '❤️ Favori' : '🤍 Favori'}</button>
             <button class="btn" id="btnAddList">📃 Ajouter à une liste</button>
             <button class="btn ${isPinnedWatching(sh) ? 'primary' : ''}" id="btnPin">${isPinnedWatching(sh) ? '📌 En cours ✓' : '📌 Marquer « en cours »'}</button>
+            ${isRewatching(sh) ? `<button class="btn" id="btnStopRewatch">🔁 Arrêter le revisionnage</button>` : ''}
             <button class="btn" id="btnArchive">${sh.archived ? 'Reprendre' : 'Arrêter / Archiver'}</button>
             <button class="btn" id="btnMarkSeason">Marquer une saison vue…</button>
             <button class="btn" id="btnAddEp">➕ Ajouter un épisode</button>
@@ -2053,6 +2103,8 @@ route('show', async (el, rest) => {
   el.querySelector('#btnFindPoster').onclick = () => openPosterSearch('tv', sh);
   const rmBtn = el.querySelector('#btnRemoveShow');
   if (rmBtn) rmBtn.onclick = () => { removeCustomShow(sh.key); toast('Série retirée'); location.hash = '#/home'; render(); };
+  const bsr = el.querySelector('#btnStopRewatch');
+  if (bsr) bsr.onclick = () => { if (userState.rewatching) delete userState.rewatching[sh.key]; scheduleSaveState(); toast('Revisionnage arrêté'); render(); };
 
   if (meta) await renderSeasons(el.querySelector('#seasons'), sh, tmdbId, meta, fresh);
 });
