@@ -278,6 +278,13 @@ main {
 .ep-react .react button { font-size: 22px; background: none; border: none; cursor: pointer; opacity: .4; transition: transform .1s, opacity .1s; }
 .ep-react .react button.on { opacity: 1; transform: scale(1.15); }
 .synopsis-text { color: #cbd5e1; font-size: 13.5px; line-height: 1.55; margin: 0; }
+.movie-progress { margin-top: 12px; max-width: 340px; }
+.movie-progress .mp-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+.movie-progress input { width: 78px; padding: 6px 8px; border-radius: 8px; background: var(--bg3); border: 1px solid var(--line); color: var(--text); font-size: 14px; }
+.movie-progress .mp-unit { color: var(--muted); font-size: 13px; }
+.movie-progress .mp-bar { position: relative; height: 6px; border-radius: 4px; background: rgba(255,255,255,.14); overflow: hidden; margin-top: 6px; }
+.movie-progress .mp-bar .bar { display: block; height: 100%; border-radius: 4px; }
+.movie-progress .mp-bar .bar.orange { background: #f59e0b; }
 
 /* AMOLED true-black theme */
 html.amoled { --bg: #000; --bg2: #0a0a0a; --bg3: #141414; --card: #0b0b0b; --line: #222; }

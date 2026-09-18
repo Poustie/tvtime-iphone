@@ -7,9 +7,13 @@ const IMG = (p, size = 'w342') => p ? `https://image.tmdb.org/t/p/${size}${p}` :
 const TMDB = 'https://api.themoviedb.org/3';
 const APP_VERSION = '2'; // numéro de version affiché dans « À propos »
 const DEFAULT_RUNTIME = 42; // minutes, fallback when unknown
+const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand inconnue
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 15, date: '18 septembre 2026', title: 'Reprise des films', items: [
+    'Vous avez mis un film en pause en plein milieu ? Indiquez sur sa fiche à quelle minute vous en êtes : une barre de progression apparaît sur son affiche pour reprendre exactement où vous vous étiez arrêté.',
+  ] },
   { id: 14, date: '11 septembre 2026', title: 'Fiches épisodes & fond noir', items: [
     'Chaque épisode a maintenant sa fiche : touchez le nom d\'un épisode pour voir son synopsis, sa date de diffusion, sa durée, la note du public, ses invités — et le marquer vu / le noter / y réagir.',
     'Nouveau réglage « Fond totalement noir (AMOLED) » pour les écrans OLED (Réglages → Affichage).',
@@ -113,6 +117,7 @@ let userState = {
   movieEmotions: {}, // movieName -> emotionId (ma réaction à un film ; '' = effacée, override de l'import)
   rewatch: {},     // epKey -> number of rewatches (override of exported count)
   movieRewatch: {}, // movieName -> number of rewatches (override)
+  movieProgress: {}, // movieName -> minutes déjà vues (reprise d'un film en cours)
   showTmdb: {},    // showKey -> tmdbId (manual TMDB match / poster override)
   movieTmdb: {},   // movieName -> { id, poster } (manual TMDB match / poster override)
   customShows: [], // [{key,tmdbId,name,poster,addedAt}] shows added by the user (future watch)
@@ -539,6 +544,28 @@ function setMovieEmotion(m, emotionId) {
 function movieWatchedOf(m) {
   return (userState.movieWatchedAt && userState.movieWatchedAt[m.name]) || m.watchedAt || null;
 }
+// Minutes already watched of a movie you paused mid-way (resume point).
+function movieProgressOf(m) {
+  const v = userState.movieProgress && userState.movieProgress[m.name];
+  const n = parseInt(v, 10);
+  return isFinite(n) && n > 0 ? n : 0;
+}
+function setMovieProgress(name, minutes) {
+  if (!userState.movieProgress) userState.movieProgress = {};
+  const n = parseInt(minutes, 10);
+  if (isFinite(n) && n > 0) userState.movieProgress[name] = n;
+  else delete userState.movieProgress[name];
+  scheduleSaveState();
+}
+// Partial-watch bar for a movie card (only for in-progress, not-yet-watched films).
+function movieCardProgress(m) {
+  if (movieStatus(m) === 'watched') return null;
+  const mins = movieProgressOf(m);
+  if (!mins) return null;
+  const rt = parseInt(m.runtime, 10);
+  const total = (isFinite(rt) && rt > 0) ? rt : MOVIE_DEFAULT_RUNTIME;
+  return { pct: Math.max(4, Math.min(99, Math.round(mins / total * 100))), cls: 'orange' };
+}
 
 //////////////////////// Favorites ////////////////////////
 function isFavShow(sh) {
@@ -722,6 +749,7 @@ function movieAboutHtml(m, meta) {
     infoRow('Sortie', meta && meta.release ? fmtFull(meta.release) : (movieYear(m) ? esc(movieYear(m)) : '')),
     infoRow('Durée', rt ? `${Math.floor(rt / 60)}h${String(rt % 60).padStart(2, '0')}` : ''),
     infoRow('Note du public', meta && meta.vote ? `⭐ ${meta.vote.toFixed(1)}/10 <span class="muted">(${meta.voteCount})</span>` : ''),
+    infoRow('Reprise', movieProgressOf(m) ? `${movieProgressOf(m)} min` + (rt ? ` / ${Math.floor(rt / 60)}h${String(rt % 60).padStart(2, '0')}` : '') + ' vues' : ''),
     infoRow('Ma note', starsHtml('aboutMovieRate', movieRatingOf(m))),
     infoRow('Mon visionnage', watchInfo),
   ].join('');
@@ -1416,6 +1444,7 @@ function setMovieStatus(name, status) {
   if (!userState.movieWatchedAt) userState.movieWatchedAt = {};
   if (status === 'watched') {
     if (!userState.movieWatchedAt[name]) userState.movieWatchedAt[name] = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    if (userState.movieProgress) delete userState.movieProgress[name]; // film terminé -> plus de reprise
   } else {
     delete userState.movieWatchedAt[name];
   }
@@ -1536,6 +1565,15 @@ route('movie', async (el, rest) => {
             <button class="btn" id="mFind">🔍 Chercher une affiche</button>
             ${isCustomMovie(m) ? `<button class="btn danger" id="mDel">🗑 Retirer</button>` : ''}
           </div>
+          ${st !== 'watched' ? `<div class="movie-progress" id="mProgBox">
+            <span class="react-label">⏱️ Reprise — j'en suis à</span>
+            <div class="mp-row">
+              <input type="number" id="mProgIn" min="0" ${rt ? `max="${rt}"` : ''} value="${movieProgressOf(m) || ''}" placeholder="min"> <span class="mp-unit">min${rtStr ? ` / ${rtStr}` : ''}</span>
+              <button class="btn sm" id="mProgSave">Enregistrer</button>
+              ${movieProgressOf(m) ? `<button class="btn sm ghost" id="mProgClear">Effacer</button>` : ''}
+            </div>
+            <div class="mp-bar">${progressBarHtml(movieCardProgress(m))}</div>
+          </div>` : ''}
           <div class="movie-react">
             <span class="react-label">Ma réaction</span>
             <div class="react" data-act="memo">${EMOTIONS.slice(0, 5).map(em => `<button data-e="${em.id}" title="${em.label}" class="${movieEmotionOf(m) === em.id ? 'on' : ''}">${em.emoji}</button>`).join('')}</div>
@@ -1571,6 +1609,10 @@ route('movie', async (el, rest) => {
   const rwBtn = el.querySelector('#mRw'); if (rwBtn) rwBtn.onclick = () => { setMovieRewatch(m.name, movieRewatchOf(m) + 1); render(); };
   el.querySelector('#mFind').onclick = () => openPosterSearch('movie', { name: m.name });
   const del = el.querySelector('#mDel'); if (del) del.onclick = () => { removeCustomMovie(m.name); toast('Film retiré'); location.hash = '#/movies'; render(); };
+  const progSave = el.querySelector('#mProgSave');
+  if (progSave) progSave.onclick = () => { setMovieProgress(m.name, el.querySelector('#mProgIn').value); toast('Progression enregistrée'); render(); };
+  const progClear = el.querySelector('#mProgClear');
+  if (progClear) progClear.onclick = () => { setMovieProgress(m.name, 0); toast('Progression effacée'); render(); };
 });
 
 function movieCardHtml(m) {
@@ -1588,6 +1630,7 @@ function movieCardHtml(m) {
     ? `<button class="card-rw ${rw > 0 ? 'on' : ''}" data-mrw="${esc(m.name)}" title="Visionnages — clic : +1, clic droit : −1">🔁${rw > 0 ? '×' + (rw + 1) : ''}</button>`
     : '';
   const delBtn = isCustomMovie(m) ? `<button class="card-del" data-mdel="${esc(m.name)}" title="Retirer ce film ajouté">🗑</button>` : '';
+  const prog = movieCardProgress(m);
   return `<div class="show-card movie-card" data-mname="${esc(m.name)}">
     <div class="poster" data-mposter="${esc(m.name)}">
       <div class="fallback-title">${esc(movieDisplayName(m))}</div>
@@ -1597,6 +1640,7 @@ function movieCardHtml(m) {
       ${delBtn}
       <button class="find-poster" data-mfind="${esc(m.name)}" title="Chercher une affiche sur TMDB">🔍</button>
       ${btn}
+      ${prog ? `<div class="card-progress">${progressBarHtml(prog)}</div>` : ''}
     </div>
     <div class="title">${esc(movieDisplayName(m))}</div>
     <div class="meta">${esc(metaBits || (st === 'watched' ? 'Vu' : 'À voir'))}</div>
