@@ -280,8 +280,8 @@ main {
 .synopsis-text { color: #cbd5e1; font-size: 13.5px; line-height: 1.55; margin: 0; }
 .movie-progress { margin-top: 12px; max-width: 340px; }
 .movie-progress .mp-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
-.movie-progress input { width: 78px; padding: 6px 8px; border-radius: 8px; background: var(--bg3); border: 1px solid var(--line); color: var(--text); font-size: 14px; }
-.movie-progress .mp-unit { color: var(--muted); font-size: 13px; }
+.movie-progress input { width: 60px; padding: 6px 8px; border-radius: 8px; background: var(--bg3); border: 1px solid var(--line); color: var(--text); font-size: 14px; }
+.movie-progress .mp-unit { color: var(--muted); font-size: 13px; margin-right: 4px; }
 .movie-progress .mp-bar { position: relative; height: 6px; border-radius: 4px; background: rgba(255,255,255,.14); overflow: hidden; margin-top: 6px; }
 .movie-progress .mp-bar .bar { display: block; height: 100%; border-radius: 4px; }
 .movie-progress .mp-bar .bar.orange { background: #f59e0b; }

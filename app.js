@@ -11,6 +11,10 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 17, date: '21 septembre 2026', title: 'Reprises plus faciles', items: [
+    'Reprise d\'un film : vous pouvez maintenant saisir où vous en êtes en heures ET minutes (par exemple 2h52), plus besoin de tout convertir en minutes.',
+    'Revisionnage de séries : dès que vous remettez un visionnage sur le 1er épisode d\'une série déjà terminée, elle repasse dans « En cours » — quel que soit le nombre de fois où vous l\'aviez déjà vue. (Un visionnage sur le 2e épisode peu après celui du 1er la relance aussi.)',
+  ] },
   { id: 16, date: '18 septembre 2026', title: 'Revisionnage de séries', items: [
     'Quand vous recommencez une série déjà terminée depuis le début (bouton « 🔁 +1 visionnage » sur le 1er épisode), elle repasse toute seule dans « En cours » avec une barre qui suit votre nouveau visionnage — et revient dans « Terminée » quand vous avez tout revu. (Revoir un épisode isolé au milieu ne la remet pas en cours.)',
   ] },
@@ -127,6 +131,8 @@ let userState = {
   customMovies: [],// [{name,releaseDate,runtime,status,addedAt}] movies added by the user
   pinnedWatching: {}, // showKey -> true : force the show into « En cours » regardless of last-seen date
   rewatching: {}, // showKey -> true : nouveau visionnage en cours d'une série terminée
+  rewatchTs: {}, // showKey -> timestamp du dernier revisionnage du 1er épisode (fenêtre 1er+2e)
+  rewatchActivity: {}, // showKey -> date "YYYY-MM-DD HH:MM:SS" du dernier revisionnage (tri « En cours »)
   favShows: {},    // showKey -> true/false : override the imported "favori" flag
   favMovies: {},   // movieName -> true : films favoris
   profileName: '', // nom affiché dans « Bonjour … » (paramétrable, override du nom importé)
@@ -324,6 +330,11 @@ function buildModel() {
     if (at && (!showLast[sk] || at > showLast[sk])) showLast[sk] = at;
   }
   for (const sh of shows.values()) sh.lastSeenAt = showLast[sh.key] || null;
+  // Un revisionnage récent (sans nouvelle date « vu ») compte aussi comme activité pour le tri.
+  for (const sh of shows.values()) {
+    const ra = userState.rewatchActivity && userState.rewatchActivity[sh.key];
+    if (ra) sh.lastSeenAt = maxDateStr(sh.lastSeenAt, ra);
+  }
 
   // emotions/reactions (baseline overlaid by user). TV Time's "star-meter"
   // votes (episodeRatings) are reactions too, so fold them into the reactions.
@@ -753,7 +764,7 @@ function movieAboutHtml(m, meta) {
     infoRow('Sortie', meta && meta.release ? fmtFull(meta.release) : (movieYear(m) ? esc(movieYear(m)) : '')),
     infoRow('Durée', rt ? `${Math.floor(rt / 60)}h${String(rt % 60).padStart(2, '0')}` : ''),
     infoRow('Note du public', meta && meta.vote ? `⭐ ${meta.vote.toFixed(1)}/10 <span class="muted">(${meta.voteCount})</span>` : ''),
-    infoRow('Reprise', movieProgressOf(m) ? `${movieProgressOf(m)} min` + (rt ? ` / ${Math.floor(rt / 60)}h${String(rt % 60).padStart(2, '0')}` : '') + ' vues' : ''),
+    infoRow('Reprise', movieProgressOf(m) ? `${Math.floor(movieProgressOf(m) / 60)}h${String(movieProgressOf(m) % 60).padStart(2, '0')}` + (rt ? ` / ${Math.floor(rt / 60)}h${String(rt % 60).padStart(2, '0')}` : '') + ' vues' : ''),
     infoRow('Ma note', starsHtml('aboutMovieRate', movieRatingOf(m))),
     infoRow('Mon visionnage', watchInfo),
   ].join('');
@@ -814,20 +825,43 @@ function setRewatch(sh, season, number, count) {
   else { MODEL.rewatchMap.delete(k); userState.rewatch[k] = 0; }
   // A rewatch implies the episode was seen at least once.
   if (c > 0 && !isSeen(sh, season, number)) toggleSeen(sh, season, number, true);
-  // Revisionnage détecté seulement si on RECOMMENCE depuis le 1er épisode
-  // (voir un épisode isolé au milieu ne remet pas la série « en cours »).
-  if (c > prev && isShowComplete(sh) && isFirstEpisode(sh, season, number)) markRewatching(sh);
+  // Revisionnage détecté quand on RECOMMENCE depuis le début (voir un épisode isolé
+  // au milieu ne remet pas la série « en cours »). Peu importe le nombre de visionnages :
+  //  - un revisionnage sur le 1er épisode suffit ;
+  //  - un revisionnage sur le 2e épisode compte aussi s'il suit de peu celui du 1er.
+  if (c > prev && isShowComplete(sh)) {
+    const rank = episodeRank(sh, season, number);
+    if (rank === 1) { markRewatching(sh); if (!userState.rewatchTs) userState.rewatchTs = {}; userState.rewatchTs[sh.key] = Date.now(); }
+    else if (rank === 2 && recentFirstRewatch(sh)) markRewatching(sh);
+  }
+  // Un revisionnage compte comme une activité récente -> la série remonte en tête des « En cours ».
+  if (c > prev) {
+    if (!userState.rewatchActivity) userState.rewatchActivity = {};
+    userState.rewatchActivity[sh.key] = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    sh.lastSeenAt = maxDateStr(sh.lastSeenAt, userState.rewatchActivity[sh.key]);
+  }
   scheduleSaveState();
 }
-// Vrai si (season,number) est le tout premier épisode vu de la série (hors spéciaux).
-function isFirstEpisode(sh, season, number) {
-  let minS = Infinity, minN = Infinity;
+function maxDateStr(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  return b > a ? b : a;
+}
+const REWATCH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // « intervalle assez court » entre 1er et 2e épisode
+function recentFirstRewatch(sh) {
+  const t = userState.rewatchTs && userState.rewatchTs[sh.key];
+  return !!(t && (Date.now() - t) < REWATCH_WINDOW_MS);
+}
+// Rang (1 = premier, 2 = deuxième, …) de l'épisode parmi les épisodes vus (hors spéciaux).
+function episodeRank(sh, season, number) {
+  const eps = [];
   for (const k of sh.seenKeys) {
     const p = k.split('|'); const s = +p[p.length - 2], n = +p[p.length - 1];
-    if (s <= 0) continue;
-    if (s < minS || (s === minS && n < minN)) { minS = s; minN = n; }
+    if (s > 0) eps.push([s, n]);
   }
-  return season === minS && number === minN;
+  eps.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  for (let i = 0; i < eps.length; i++) if (eps[i][0] === season && eps[i][1] === number) return i + 1;
+  return 0;
 }
 function markRewatching(sh) {
   if (!userState.rewatching) userState.rewatching = {};
@@ -851,7 +885,8 @@ function isRewatching(sh) {
   if (!userState.rewatching || !userState.rewatching[sh.key]) return false;
   if (!isShowComplete(sh)) return false;
   const pass = rewatchPass(sh);
-  return !!(pass && pass.done < pass.total);
+  if (pass && pass.done >= pass.total) return false; // passage terminé -> revient « Terminée »
+  return true;
 }
 function movieRewatchOf(m) {
   const o = userState.movieRewatch && userState.movieRewatch[m.name];
@@ -1611,7 +1646,8 @@ route('movie', async (el, rest) => {
           ${st !== 'watched' ? `<div class="movie-progress" id="mProgBox">
             <span class="react-label">⏱️ Reprise — j'en suis à</span>
             <div class="mp-row">
-              <input type="number" id="mProgIn" min="0" ${rt ? `max="${rt}"` : ''} value="${movieProgressOf(m) || ''}" placeholder="min"> <span class="mp-unit">min${rtStr ? ` / ${rtStr}` : ''}</span>
+              <input type="number" id="mProgH" min="0" ${rt ? `max="${Math.floor(rt / 60)}"` : ''} value="${movieProgressOf(m) ? Math.floor(movieProgressOf(m) / 60) : ''}" placeholder="h"> <span class="mp-unit">h</span>
+              <input type="number" id="mProgM" min="0" max="59" value="${movieProgressOf(m) ? movieProgressOf(m) % 60 : ''}" placeholder="min"> <span class="mp-unit">min${rtStr ? ` / ${rtStr}` : ''}</span>
               <button class="btn sm" id="mProgSave">Enregistrer</button>
               ${movieProgressOf(m) ? `<button class="btn sm ghost" id="mProgClear">Effacer</button>` : ''}
             </div>
@@ -1653,7 +1689,11 @@ route('movie', async (el, rest) => {
   el.querySelector('#mFind').onclick = () => openPosterSearch('movie', { name: m.name });
   const del = el.querySelector('#mDel'); if (del) del.onclick = () => { removeCustomMovie(m.name); toast('Film retiré'); location.hash = '#/movies'; render(); };
   const progSave = el.querySelector('#mProgSave');
-  if (progSave) progSave.onclick = () => { setMovieProgress(m.name, el.querySelector('#mProgIn').value); toast('Progression enregistrée'); render(); };
+  if (progSave) progSave.onclick = () => {
+    const h = parseInt(el.querySelector('#mProgH').value, 10) || 0;
+    const mn = parseInt(el.querySelector('#mProgM').value, 10) || 0;
+    setMovieProgress(m.name, h * 60 + mn); toast('Progression enregistrée'); render();
+  };
   const progClear = el.querySelector('#mProgClear');
   if (progClear) progClear.onclick = () => { setMovieProgress(m.name, 0); toast('Progression effacée'); render(); };
 });
