@@ -11,6 +11,10 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 20, date: '24 septembre 2026', title: 'Séries arrêtées', items: [
+    'Regarder ou revoir un épisode d\'une série « Arrêtée » la reprend automatiquement : elle revient dans vos catégories (et dans « En cours » si vous la revoyez).',
+    'Le bouton ⏹ sur une affiche demande maintenant confirmation avant d\'arrêter une série (fini les arrêts par erreur).',
+  ] },
   { id: 19, date: '24 septembre 2026', title: 'Revisionnage plus fiable', items: [
     'Une série en revisionnage ne disparaît plus des « En cours » : si vous continuez à revoir les épisodes dans l\'ordre (par ex. l\'épisode 10 après les 9 premiers), elle y revient automatiquement.',
     'Les épisodes qui n\'avaient été vus qu\'une fois (par ex. une dernière saison jamais revue) comptent bien dans le revisionnage dès le premier « +1 ».',
@@ -790,6 +794,7 @@ function toggleSeen(sh, season, number, seen) {
   if (target) {
     sh.seenKeys.add(k);
     sh.followed = true; // marquer un épisode vu suit automatiquement la série
+    unarchiveOnActivity(sh);
     if (userState.seenRemove[k]) delete userState.seenRemove[k];
     else userState.seenAdd[k] = { at: new Date().toISOString().slice(0, 19).replace('T', ' ') };
   } else {
@@ -842,6 +847,7 @@ function setRewatch(sh, season, number, count) {
   if (c > prev && isShowComplete(sh) && continuesFromStart(sh, season, number, c)) markRewatching(sh, c);
   // Un revisionnage compte comme une activité récente -> la série remonte en tête des « En cours ».
   if (c > prev) {
+    unarchiveOnActivity(sh);
     if (!userState.rewatchActivity) userState.rewatchActivity = {};
     userState.rewatchActivity[sh.key] = new Date().toISOString().slice(0, 19).replace('T', ' ');
     sh.lastSeenAt = maxDateStr(sh.lastSeenAt, userState.rewatchActivity[sh.key]);
@@ -892,7 +898,7 @@ function passInfo(sh) {
 function inPassKey(k, pass) {
   const c = MODEL.rewatchMap.get(k) || 0;
   const at = userState.rewatchAt && userState.rewatchAt[k];
-  return c >= pass.level || (c > 0 && !!at && at >= pass.since);
+  return c >= pass.level || (c > 0 && !!at && at > pass.since);
 }
 function rewatchPass(sh) {
   const pass = passInfo(sh);
@@ -944,6 +950,12 @@ function toggleArchived(sh) {
   sh.archived = !sh.archived;
   userState.archived[sh.key] = sh.archived;
   scheduleSaveState();
+}
+// Regarder (ou revoir) un épisode d'une série arrêtée la reprend automatiquement.
+function unarchiveOnActivity(sh) {
+  if (!sh.archived) return;
+  sh.archived = false;
+  userState.archived[sh.key] = false;
 }
 function isPinnedWatching(sh) {
   return !!(userState.pinnedWatching && userState.pinnedWatching[sh.key]);
@@ -2000,9 +2012,12 @@ function wireCardArchive(container) {
       ev.stopPropagation();
       const sh = MODEL.shows.get(b.dataset.arch);
       if (!sh) return;
-      toggleArchived(sh);
-      toast(sh.archived ? 'Série arrêtée / archivée' : 'Série reprise');
-      render();
+      const apply = () => { toggleArchived(sh); toast(sh.archived ? 'Série arrêtée / archivée' : 'Série reprise'); render(); };
+      if (sh.archived) { apply(); return; }
+      showModal(`<h2>Arrêter cette série ?</h2>
+        <p><strong>${esc(displayName(sh))}</strong> sera rangée dans « ⏹ Arrêtées » et n'apparaîtra plus dans vos catégories.</p>
+        <div class="row"><button class="btn ghost" data-close>Annuler</button><button class="btn primary" id="archGo">Arrêter</button></div>`,
+        (root) => { root.querySelector('#archGo').onclick = () => { closeModal(); apply(); }; });
     };
   });
   container.querySelectorAll('[data-find]').forEach(b => {
