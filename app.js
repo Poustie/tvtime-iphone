@@ -11,6 +11,15 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 19, date: '24 septembre 2026', title: 'Revisionnage plus fiable', items: [
+    'Une série en revisionnage ne disparaît plus des « En cours » : si vous continuez à revoir les épisodes dans l\'ordre (par ex. l\'épisode 10 après les 9 premiers), elle y revient automatiquement.',
+    'Les épisodes qui n\'avaient été vus qu\'une fois (par ex. une dernière saison jamais revue) comptent bien dans le revisionnage dès le premier « +1 ».',
+  ] },
+  { id: 18, date: '24 septembre 2026', title: 'Mieux voir où j\'en suis', items: [
+    'Les épisodes vus dans votre visionnage actuel sont maintenant teintés en vert : on voit tout de suite où on en est (aussi pendant un revisionnage, où seuls les épisodes déjà revus sont teintés).',
+    'Pendant un revisionnage, la fiche de la série s\'ouvre directement sur le prochain épisode à revoir.',
+    'En revenant d\'une fiche épisode, vous retrouvez la page de la série exactement où vous étiez (même saison ouverte, même position).',
+  ] },
   { id: 17, date: '21 septembre 2026', title: 'Reprises plus faciles', items: [
     'Reprise d\'un film : vous pouvez maintenant saisir où vous en êtes en heures ET minutes (par exemple 2h52), plus besoin de tout convertir en minutes.',
     'Revisionnage de séries : dès que vous remettez un visionnage sur le 1er épisode d\'une série déjà terminée, elle repasse dans « En cours » — quel que soit le nombre de fois où vous l\'aviez déjà vue. (Un visionnage sur le 2e épisode peu après celui du 1er la relance aussi.)',
@@ -131,7 +140,7 @@ let userState = {
   customMovies: [],// [{name,releaseDate,runtime,status,addedAt}] movies added by the user
   pinnedWatching: {}, // showKey -> true : force the show into « En cours » regardless of last-seen date
   rewatching: {}, // showKey -> true : nouveau visionnage en cours d'une série terminée
-  rewatchTs: {}, // showKey -> timestamp du dernier revisionnage du 1er épisode (fenêtre 1er+2e)
+  rewatchAt: {}, // epKey -> timestamp du dernier « +1 visionnage » (appartenance au revisionnage en cours)
   rewatchActivity: {}, // showKey -> date "YYYY-MM-DD HH:MM:SS" du dernier revisionnage (tri « En cours »)
   favShows: {},    // showKey -> true/false : override the imported "favori" flag
   favMovies: {},   // movieName -> true : films favoris
@@ -825,15 +834,12 @@ function setRewatch(sh, season, number, count) {
   else { MODEL.rewatchMap.delete(k); userState.rewatch[k] = 0; }
   // A rewatch implies the episode was seen at least once.
   if (c > 0 && !isSeen(sh, season, number)) toggleSeen(sh, season, number, true);
-  // Revisionnage détecté quand on RECOMMENCE depuis le début (voir un épisode isolé
-  // au milieu ne remet pas la série « en cours »). Peu importe le nombre de visionnages :
-  //  - un revisionnage sur le 1er épisode suffit ;
-  //  - un revisionnage sur le 2e épisode compte aussi s'il suit de peu celui du 1er.
-  if (c > prev && isShowComplete(sh)) {
-    const rank = episodeRank(sh, season, number);
-    if (rank === 1) { markRewatching(sh); if (!userState.rewatchTs) userState.rewatchTs = {}; userState.rewatchTs[sh.key] = Date.now(); }
-    else if (rank === 2 && recentFirstRewatch(sh)) markRewatching(sh);
-  }
+  if (!userState.rewatchAt) userState.rewatchAt = {};
+  if (c > prev) userState.rewatchAt[k] = Date.now();
+  else if (c < prev) delete userState.rewatchAt[k];
+  // Revisionnage détecté quand on (re)commence depuis le début : 1er épisode, ou suite
+  // d'épisodes tous déjà revus avant celui-ci. Un épisode isolé au milieu ne déclenche rien.
+  if (c > prev && isShowComplete(sh) && continuesFromStart(sh, season, number, c)) markRewatching(sh, c);
   // Un revisionnage compte comme une activité récente -> la série remonte en tête des « En cours ».
   if (c > prev) {
     if (!userState.rewatchActivity) userState.rewatchActivity = {};
@@ -847,46 +853,78 @@ function maxDateStr(a, b) {
   if (!b) return a;
   return b > a ? b : a;
 }
-const REWATCH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // « intervalle assez court » entre 1er et 2e épisode
-function recentFirstRewatch(sh) {
-  const t = userState.rewatchTs && userState.rewatchTs[sh.key];
-  return !!(t && (Date.now() - t) < REWATCH_WINDOW_MS);
-}
-// Rang (1 = premier, 2 = deuxième, …) de l'épisode parmi les épisodes vus (hors spéciaux).
-function episodeRank(sh, season, number) {
+// Seen regular episodes (no specials) in viewing order: [[season, n, key], …].
+function regularEps(sh) {
   const eps = [];
   for (const k of sh.seenKeys) {
     const p = k.split('|'); const s = +p[p.length - 2], n = +p[p.length - 1];
-    if (s > 0) eps.push([s, n]);
+    if (s > 0) eps.push([s, n, k]);
   }
-  eps.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  for (let i = 0; i < eps.length; i++) if (eps[i][0] === season && eps[i][1] === number) return i + 1;
-  return 0;
+  return eps.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 }
-function markRewatching(sh) {
+// True if every episode before (season, number) is already seen c+1 times or is part of the current pass.
+function continuesFromStart(sh, season, number, c) {
+  const pass = currentPass(sh);
+  for (const [s, n, k] of regularEps(sh)) {
+    if (s === season && n === number) return true;
+    if ((MODEL.rewatchMap.get(k) || 0) < c && !(pass && inPassKey(k, pass))) return false;
+  }
+  return false;
+}
+// Pass = { level, since } : an episode belongs to it if seen `level`+1 times, or re-watched since the pass started.
+function markRewatching(sh, level) {
   if (!userState.rewatching) userState.rewatching = {};
-  userState.rewatching[sh.key] = true;
+  const cur = isRewatching(sh) ? passInfo(sh) : null;
+  if (cur && level <= cur.level) return;
+  userState.rewatching[sh.key] = { level: Math.max(1, level | 0), since: Date.now() };
 }
-// Progress of the current re-watch pass (episodes brought to the highest view count).
+function passInfo(sh) {
+  const f = userState.rewatching && userState.rewatching[sh.key];
+  if (!f) return null;
+  if (typeof f === 'object') return f;
+  // Ancien format (true) : niveau = nb de visionnages du 1er épisode.
+  const eps = regularEps(sh);
+  let level = eps.length ? (MODEL.rewatchMap.get(eps[0][2]) || 0) : 0;
+  if (level <= 0) for (const [, , k] of eps) level = Math.max(level, MODEL.rewatchMap.get(k) || 0);
+  const ts = userState.rewatchTs && userState.rewatchTs[sh.key];
+  return { level: Math.max(1, level), since: ts || Infinity };
+}
+function inPassKey(k, pass) {
+  const c = MODEL.rewatchMap.get(k) || 0;
+  const at = userState.rewatchAt && userState.rewatchAt[k];
+  return c >= pass.level || (c > 0 && !!at && at >= pass.since);
+}
 function rewatchPass(sh) {
-  const m = metaFor(sh);
-  const total = m && m.totalEpisodes > 0 ? m.totalEpisodes : 0;
-  if (!total) return null;
-  const prefix = sh.key + '|';
-  let level = 0;
-  for (const [k, v] of MODEL.rewatchMap) { if (v > 0 && k.startsWith(prefix) && v > level) level = v; }
-  if (level <= 0) return null;
+  const pass = passInfo(sh);
+  if (!pass) return null;
+  const eps = regularEps(sh);
+  if (!eps.length) return null;
   let done = 0;
-  for (const [k, v] of MODEL.rewatchMap) { if (k.startsWith(prefix) && v >= level) done++; }
-  return { level, done, total };
+  for (const [, , k] of eps) if (inPassKey(k, pass)) done++;
+  return { level: pass.level, since: pass.since, done, total: eps.length };
 }
 // A finished show is "being re-watched" while its current pass isn't complete.
 function isRewatching(sh) {
   if (!userState.rewatching || !userState.rewatching[sh.key]) return false;
   if (!isShowComplete(sh)) return false;
   const pass = rewatchPass(sh);
-  if (pass && pass.done >= pass.total) return false; // passage terminé -> revient « Terminée »
-  return true;
+  return !!(pass && pass.done < pass.total); // passage terminé -> revient « Terminée »
+}
+// Current re-watch pass (null = first viewing: every seen episode counts).
+function currentPass(sh) {
+  return isRewatching(sh) ? passInfo(sh) : null;
+}
+function inCurrentPass(sh, season, n, pass) {
+  const k = epKey(sh.key, season, n);
+  return sh.seenKeys.has(k) && (!pass || inPassKey(k, pass));
+}
+// Re-tint every episode row of the show page after a change that may shift the pass.
+function repaintPass(sh) {
+  const pass = currentPass(sh);
+  document.querySelectorAll('#seasons .season-body[data-season] .ep[data-n]').forEach(row => {
+    const sn = +row.closest('.season-body').dataset.season, n = +row.dataset.n;
+    row.classList.toggle('cur', inCurrentPass(sh, sn, n, pass));
+  });
 }
 function movieRewatchOf(m) {
   const o = userState.movieRewatch && userState.movieRewatch[m.name];
@@ -958,6 +996,17 @@ function openMovie(name) {
   scrollByHash[location.hash || '#/movies'] = window.scrollY;
   location.hash = '#/movie/' + encodeURIComponent(name);
 }
+// Where the user was on a show page before opening an episode (restored on return).
+let showViewRestore = null;
+function saveShowView(sh, row) {
+  const body = row.closest('.season-body');
+  showViewRestore = {
+    key: sh.key,
+    open: [...document.querySelectorAll('#seasons .season-body')].map(b => !b.classList.contains('collapsed')),
+    bodyId: body ? body.id : null, n: row.dataset.n,
+    top: row.getBoundingClientRect().top, y: window.scrollY,
+  };
+}
 function openEpisode(showKey, season, n) {
   scrollByHash[location.hash || '#/home'] = window.scrollY;
   location.hash = '#/episode/' + encodeURIComponent(showKey) + '/' + season + '/' + n;
@@ -1000,7 +1049,7 @@ async function render() {
   document.querySelectorAll('.page-snap').forEach(n => n.remove()); // safety: never leave a frozen page behind
   const [name, ...rest] = currentRoute().split('/');
   if (name !== 'show' && name !== 'movie' && name !== 'episode') backTarget = location.hash || '#/home';
-  if (name !== 'show' && name !== 'episode') lastShowKey = null; // re-opening a show counts as a fresh visit
+  if (name !== 'show' && name !== 'episode') { lastShowKey = null; showViewRestore = null; } // re-opening a show counts as a fresh visit
   // Library / stats / lists / settings live under the "Profil" tab.
   const navName = ['library', 'stats', 'lists', 'settings', 'changelog'].includes(name) ? 'profile' : (name === 'preview' ? 'explore' : name);
   document.querySelectorAll('.bottom-nav a').forEach(a => a.classList.toggle('active', a.dataset.route === navName));
@@ -2328,6 +2377,8 @@ async function renderSeasons(container, sh, tmdbId, meta, fresh) {
     const p = k.split('|'); const S = +p[p.length - 2], N = +p[p.length - 1];
     if (S > lastSeenS || (S === lastSeenS && N > lastSeenN)) { lastSeenS = S; lastSeenN = N; }
   }
+  // During a re-watch, the resume point is the first episode not yet seen in this viewing.
+  const curPass = currentPass(sh);
   let blockIdx = 0;
   for (const block of blocks) {
     const sn = block.sn;
@@ -2340,8 +2391,10 @@ async function renderSeasons(container, sh, tmdbId, meta, fresh) {
 
     // Expand the block holding the resume point (first aired unseen episode that
     // comes after the last watched one).
-    const firstUnseen = all.find(e => (!e.air || new Date(e.air) <= new Date()) && !isSeen(sh, sn, e.n)
-      && (sn > lastSeenS || (sn === lastSeenS && e.n > lastSeenN)));
+    const firstUnseen = curPass
+      ? (sn > 0 ? all.find(e => isSeen(sh, sn, e.n) && !inCurrentPass(sh, sn, e.n, curPass)) : undefined)
+      : all.find(e => (!e.air || new Date(e.air) <= new Date()) && !isSeen(sh, sn, e.n)
+        && (sn > lastSeenS || (sn === lastSeenS && e.n > lastSeenN)));
     const hasUnseen = !!firstUnseen;
     const expand = !expandedChosen && hasUnseen;
     if (expand) expandedChosen = true;
@@ -2356,7 +2409,8 @@ async function renderSeasons(container, sh, tmdbId, meta, fresh) {
 
     const updateCount = () => { const c = document.getElementById(secId + '_c'); if (c) c.textContent = `${seenInBlock()} / ${total}`; };
     const buildBody = () => {
-      body.innerHTML = all.map(e => epHtml(sh, sn, e)).join('') +
+      const pass = currentPass(sh);
+      body.innerHTML = all.map(e => epHtml(sh, sn, e, pass)).join('') +
         `<button class="btn sm ghost add-ep" data-season="${sn}">➕ Ajouter un épisode à la saison ${sn}</button>`;
       wireEpisodes(body, sh, sn, updateCount, { getPrevUnseen });
       body.querySelector('.add-ep').onclick = () => addEpisodePrompt(sh, meta, sn);
@@ -2387,7 +2441,7 @@ async function renderSeasons(container, sh, tmdbId, meta, fresh) {
         aired.forEach(e => { if (!isSeen(sh, sn, e.n)) toggleSeen(sh, sn, e.n, true); });
         toast('Saison marquée comme vue');
       }
-      buildBody(); updateSyncStatus();
+      buildBody(); repaintPass(sh); updateSyncStatus();
       if (!wasComplete && isShowComplete(sh)) celebrateCompletion(sh);
     };
     // "Tout non vu": clear seen AND rewatch counts for the whole block. Stays in place.
@@ -2398,7 +2452,7 @@ async function renderSeasons(container, sh, tmdbId, meta, fresh) {
         if (isSeen(sh, sn, e.n)) toggleSeen(sh, sn, e.n, false);
       });
       toast('Saison marquée comme non vue');
-      buildBody(); updateSyncStatus();
+      buildBody(); repaintPass(sh); updateSyncStatus();
     };
   }
 
@@ -2407,16 +2461,31 @@ async function renderSeasons(container, sh, tmdbId, meta, fresh) {
   if (fresh && firstUnseenEl && sh.seenKeys.size > 0) {
     setTimeout(() => { try { firstUnseenEl.scrollIntoView({ block: 'center' }); } catch {} }, 80);
   }
+  // Back from an episode page: same open seasons and same position as before.
+  const rs = showViewRestore;
+  if (!fresh && rs && rs.key === sh.key) {
+    showViewRestore = null;
+    container.querySelectorAll('.season-body').forEach((b, i) => {
+      const open = !!rs.open[i];
+      b.classList.toggle('collapsed', !open);
+      if (b.previousElementSibling) b.previousElementSibling.classList.toggle('collapsed', !open);
+    });
+    setTimeout(() => {
+      const row = rs.bodyId ? document.querySelector('#' + rs.bodyId + ' .ep[data-n="' + rs.n + '"]') : null;
+      window.scrollTo(0, row ? row.getBoundingClientRect().top + window.scrollY - rs.top : rs.y);
+    }, 80);
+  }
 }
 
-function epHtml(sh, season, e) {
+function epHtml(sh, season, e, pass) {
   const k = epKey(sh.key, season, e.n);
   const seen = sh.seenKeys.has(k);
+  const cur = seen && (!pass || inPassKey(k, pass));
   const rating = MODEL.ratingMap.get(k) || 0;
   const emo = MODEL.emotionMap.get(k);
   const rw = MODEL.rewatchMap.get(k) || 0;
   const aired = e.air && new Date(e.air) <= new Date();
-  return `<div class="ep ${seen ? 'seen' : ''} ${e.custom ? 'custom' : ''}" data-n="${e.n}">
+  return `<div class="ep ${seen ? 'seen' : ''} ${cur ? 'cur' : ''} ${e.custom ? 'custom' : ''}" data-n="${e.n}">
     <div class="check ${seen ? 'on' : ''}" data-act="seen">✓</div>
     <div class="num">${season}×${String(e.n).padStart(2, '0')}</div>
     <div class="epname" data-act="open">${esc(e.name || 'Épisode ' + e.n)}${e.custom ? ' <span class="tag-custom">ajouté</span>' : ''}<small>${e.air ? esc(e.air) : ''}${!aired && e.air ? ' · à venir' : ''}</small></div>
@@ -2503,6 +2572,7 @@ function wireEpisodes(container, sh, season, onChange, opts) {
       const seen = isSeen(sh, season, n);
       row.classList.toggle('seen', seen);
       row.querySelector('.check').classList.toggle('on', seen);
+      repaintPass(sh);
       updateSyncStatus(); onChange();
       // When checking (not unchecking) a mid-season episode, offer to also mark
       // every earlier aired episode as seen.
@@ -2520,6 +2590,7 @@ function wireEpisodes(container, sh, season, onChange, opts) {
       const seen = isSeen(sh, season, n);
       row.classList.toggle('seen', seen);
       row.querySelector('.check').classList.toggle('on', seen);
+      repaintPass(sh);
     };
     rwEl.onclick = () => { setRewatch(sh, season, n, rewatchOf(sh, season, n) + 1); paintRw(); updateSyncStatus(); onChange(); };
     rwEl.oncontextmenu = (ev) => { ev.preventDefault(); setRewatch(sh, season, n, rewatchOf(sh, season, n) - 1); paintRw(); onChange(); };
@@ -2542,7 +2613,7 @@ function wireEpisodes(container, sh, season, onChange, opts) {
     const del = row.querySelector('[data-act="delcustom"]');
     if (del) del.onclick = () => { removeCustomEpisode(sh, season, n); render(); };
     const nameEl = row.querySelector('.epname[data-act="open"]');
-    if (nameEl) nameEl.onclick = () => openEpisode(sh.key, season, n);
+    if (nameEl) nameEl.onclick = () => { saveShowView(sh, row); openEpisode(sh.key, season, n); };
   });
 }
 
@@ -2561,6 +2632,7 @@ function offerMarkPrevious(sh, prevList, season, n) {
           const row = document.querySelector('.season-body[data-season="' + p.season + '"] .ep[data-n="' + p.n + '"]');
           if (row) { row.classList.add('seen'); const ck = row.querySelector('.check'); if (ck) ck.classList.add('on'); }
         });
+        repaintPass(sh);
         document.querySelectorAll('.season-body[data-season]').forEach(body => {
           const c = document.getElementById(body.id + '_c');
           if (c) c.textContent = body.querySelectorAll('.ep.seen').length + ' / ' + body.querySelectorAll('.ep').length;
