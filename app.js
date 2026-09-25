@@ -11,9 +11,13 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 21, date: '25 septembre 2026', title: 'Barre de revisionnage', items: [
+    'Sur l\'affiche d\'une série en revisionnage, la barre « terminée » (violette ou verte) reste visible en fond, et la progression du nouveau visionnage s\'affiche par-dessus en bleu.',
+  ] },
   { id: 20, date: '24 septembre 2026', title: 'Séries arrêtées', items: [
     'Regarder ou revoir un épisode d\'une série « Arrêtée » la reprend automatiquement : elle revient dans vos catégories (et dans « En cours » si vous la revoyez).',
     'Le bouton ⏹ sur une affiche demande maintenant confirmation avant d\'arrêter une série (fini les arrêts par erreur).',
+    'Pareil pour le bouton 📌 : épingler (ou désépingler) une série depuis son affiche demande confirmation.',
   ] },
   { id: 19, date: '24 septembre 2026', title: 'Revisionnage plus fiable', items: [
     'Une série en revisionnage ne disparaît plus des « En cours » : si vous continuez à revoir les épisodes dans l\'ordre (par ex. l\'épisode 10 après les 9 premiers), elle y revient automatiquement.',
@@ -1969,18 +1973,19 @@ function showProgress(s, m) {
   const seen = s.seenKeys.size;
   if (!total || seen <= 0) return null;
   if (seen >= total) {
-    // Un nouveau visionnage en cours -> barre de progression du passage courant.
+    const ended = m.status === 'Ended' || m.status === 'Canceled';
+    // Revisionnage : barre « terminée » en fond + progression du nouveau visionnage par-dessus.
     if (isRewatching(s)) {
       const pass = rewatchPass(s);
-      if (pass) return { pct: Math.max(4, Math.min(99, Math.round(pass.done / pass.total * 100))), cls: 'orange' };
+      if (pass) return { pct: Math.max(4, Math.min(99, Math.round(pass.done / pass.total * 100))), cls: 'rw', base: ended ? 'purple' : 'green' };
     }
-    const ended = m.status === 'Ended' || m.status === 'Canceled';
     return { pct: 100, cls: ended ? 'purple' : 'green' };
   }
   return { pct: Math.max(4, Math.min(99, Math.round(seen / total * 100))), cls: 'orange' };
 }
 function progressBarHtml(prog) {
-  return prog ? `<span class="bar ${prog.cls}" style="width:${prog.pct}%"></span>` : '';
+  if (!prog) return '';
+  return (prog.base ? `<span class="bar-base ${prog.base}"></span>` : '') + `<span class="bar ${prog.cls}" style="width:${prog.pct}%"></span>`;
 }
 
 function cardHtml(s) {
@@ -2032,9 +2037,16 @@ function wireCardArchive(container) {
       ev.stopPropagation();
       const sh = MODEL.shows.get(b.dataset.pin);
       if (!sh) return;
-      togglePinWatching(sh);
-      toast(isPinnedWatching(sh) ? 'Ajoutée à « À voir »' : 'Retirée de « À voir »');
-      render();
+      const pinned = isPinnedWatching(sh);
+      showModal(`<h2>${pinned ? 'Retirer de « En cours » ?' : 'Épingler dans « En cours » ?'}</h2>
+        <p><strong>${esc(displayName(sh))}</strong> ${pinned ? 'ne sera plus forcée dans « En cours » et retrouvera sa catégorie habituelle.' : 'restera dans « En cours » même si vous ne la regardez pas pendant longtemps.'}</p>
+        <div class="row"><button class="btn ghost" data-close>Annuler</button><button class="btn primary" id="pinGo">${pinned ? 'Retirer' : 'Épingler'}</button></div>`,
+        (root) => { root.querySelector('#pinGo').onclick = () => {
+          closeModal();
+          togglePinWatching(sh);
+          toast(isPinnedWatching(sh) ? 'Ajoutée à « À voir »' : 'Retirée de « À voir »');
+          render();
+        }; });
     };
   });
 }

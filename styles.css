@@ -177,10 +177,14 @@ main {
   position: absolute; left: 0; right: 0; bottom: 0; height: 5px; z-index: 2;
   background: rgba(0,0,0,.45);
 }
-.card-progress .bar { display: block; height: 100%; width: 0; border-radius: 0 2px 2px 0; transition: width .3s; }
+.card-progress .bar { display: block; position: relative; height: 100%; width: 0; border-radius: 0 2px 2px 0; transition: width .3s; }
 .card-progress .bar.orange { background: #f59e0b; }
 .card-progress .bar.green  { background: #22c55e; }
 .card-progress .bar.purple { background: #a855f7; }
+.card-progress .bar-base { position: absolute; inset: 0; opacity: .4; }
+.card-progress .bar-base.green  { background: #22c55e; }
+.card-progress .bar-base.purple { background: #a855f7; }
+.card-progress .bar.rw { background: #38bdf8; box-shadow: 0 0 4px rgba(56,189,248,.9); }
 .progress { height: 4px; background: var(--line); border-radius: 4px; overflow: hidden; margin-top: 8px; }
 .progress > i { display: block; height: 100%; background: var(--accent); }
 .show-card .title { margin-top: 8px; font-size: 13px; font-weight: 600; line-height: 1.25;
