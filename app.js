@@ -13,7 +13,7 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 const CHANGELOG = [
   { id: 22, date: '28 septembre 2026', title: 'Fiches épisodes & acteurs', items: [
     'Nouvelle fiche épisode : le titre et le numéro en haut, puis l\'image en grand qui se fond dans le noir jusqu\'au synopsis.',
-    'Fiche film : le titre passe au-dessus de l\'affiche.',
+    'Fiches films et séries (et aperçus) : le titre passe au-dessus de l\'affiche.',
     'Le bouton « ← » revient toujours à la page précédente (acteur → série → liste…) et indique où il mène.',
     'Touchez un acteur (distribution ou invités) pour ouvrir sa fiche : photo, âge, biographie, filmographie (vos séries et films en premier) et lien vers Wikipédia.',
   ] },
@@ -2203,12 +2203,12 @@ route('show', async (el, rest) => {
   const genres = meta ? meta.genres.join(' · ') : '';
   el.innerHTML = `
     ${backBtn('#/home')}
-    <div class="detail-hero" style="margin-top:12px">
+    <div class="detail-hero title-top" style="margin-top:12px">
       <div class="bg" style="${meta && meta.backdrop ? `background-image:url(${IMG(meta.backdrop, 'w780')})` : ''}"></div>
       <div class="inner">
+        <h1>${esc(meta && meta.name ? meta.name : displayName(sh))}</h1>
         <div class="poster">${posterHtml(sh, meta && meta.poster)}</div>
         <div>
-          <h1>${esc(meta && meta.name ? meta.name : displayName(sh))}</h1>
           <div class="sub">${meta ? esc((meta.firstAir || '').slice(0, 4)) + (meta.status ? ' · ' + esc(statusFr(meta.status)) : '') : ''} ${genres ? '· ' + esc(genres) : ''}</div>
           <div class="tags">
             <span class="chip">${sh.seenKeys.size} épisode(s) vu(s)${meta && meta.totalEpisodes ? ' / ' + meta.totalEpisodes : ''}</span>
@@ -2890,12 +2890,12 @@ route('preview', async (el, rest) => {
       const meta = await getShowMeta(id);
       const genres = meta.genres.join(' · ');
       pv.innerHTML = `
-        <div class="detail-hero" style="margin-top:12px">
+        <div class="detail-hero title-top" style="margin-top:12px">
           <div class="bg" style="${meta.backdrop ? `background-image:url(${IMG(meta.backdrop, 'w780')})` : ''}"></div>
           <div class="inner">
+            <h1>${esc(meta.name)}</h1>
             <div class="poster">${meta.poster ? `<img src="${IMG(meta.poster, 'w342')}" alt="">` : '<div class="ph">📺</div>'}</div>
             <div>
-              <h1>${esc(meta.name)}</h1>
               <div class="sub">${esc((meta.firstAir || '').slice(0, 4))}${meta.status ? ' · ' + esc(statusFr(meta.status)) : ''} ${genres ? '· ' + esc(genres) : ''}</div>
               <div class="tags"><span class="chip">${meta.totalEpisodes || 0} épisode(s)</span>${meta.vote ? `<span class="chip">⭐ ${meta.vote.toFixed(1)}</span>` : ''}</div>
               <div class="overview">${esc(meta.overview || '')}</div>
@@ -2913,12 +2913,12 @@ route('preview', async (el, rest) => {
       const genres = meta.genres.join(' · ');
       const rt = meta.runtime;
       pv.innerHTML = `
-        <div class="detail-hero" style="margin-top:12px">
+        <div class="detail-hero title-top" style="margin-top:12px">
           <div class="bg" style="${meta.backdrop ? `background-image:url(${IMG(meta.backdrop, 'w780')})` : ''}"></div>
           <div class="inner">
+            <h1>${esc(meta.title)}</h1>
             <div class="poster">${meta.poster ? `<img src="${IMG(meta.poster, 'w342')}" alt="">` : '<div class="ph">🎬</div>'}</div>
             <div>
-              <h1>${esc(meta.title)}</h1>
               <div class="sub">${esc((meta.release || '').slice(0, 4))}${rt ? ' · ' + Math.floor(rt / 60) + 'h' + String(rt % 60).padStart(2, '0') : ''} ${genres ? '· ' + esc(genres) : ''}${meta.vote ? ' · ⭐ ' + meta.vote.toFixed(1) : ''}</div>
               ${meta.tagline ? `<div class="sub" style="font-style:italic;margin-top:4px">${esc(meta.tagline)}</div>` : ''}
               <div class="overview">${esc(meta.overview || '')}</div>
