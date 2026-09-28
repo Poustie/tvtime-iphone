@@ -11,6 +11,12 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 22, date: '28 septembre 2026', title: 'Fiches épisodes & acteurs', items: [
+    'Nouvelle fiche épisode : le titre et le numéro en haut, puis l\'image en grand qui se fond dans le noir jusqu\'au synopsis.',
+    'Fiche film : le titre passe au-dessus de l\'affiche.',
+    'Le bouton « ← » revient toujours à la page précédente (acteur → série → liste…) et indique où il mène.',
+    'Touchez un acteur (distribution ou invités) pour ouvrir sa fiche : photo, âge, biographie, filmographie (vos séries et films en premier) et lien vers Wikipédia.',
+  ] },
   { id: 21, date: '25 septembre 2026', title: 'Barre de revisionnage', items: [
     'Sur l\'affiche d\'une série en revisionnage, la barre « terminée » (violette ou verte) reste visible en fond, et la progression du nouveau visionnage s\'affiche par-dessus en bleu.',
   ] },
@@ -437,9 +443,9 @@ function alignSeenToTmdb(sh, meta) {
 //////////////////////// TMDB ////////////////////////
 function hasKey() { return !!userState.tmdbKey; }
 
-async function tmdbFetch(path) {
+async function tmdbFetch(path, lang = 'fr-FR') {
   const sep = path.includes('?') ? '&' : '?';
-  const url = `${TMDB}${path}${sep}api_key=${encodeURIComponent(userState.tmdbKey)}&language=fr-FR`;
+  const url = `${TMDB}${path}${sep}api_key=${encodeURIComponent(userState.tmdbKey)}&language=${lang}`;
   const r = await fetch(url);
   if (!r.ok) throw new Error('TMDB ' + r.status);
   return r.json();
@@ -478,7 +484,7 @@ async function getEpisodeMeta(tmdbId, season, n, force) {
   const meta = {
     name: d.name, overview: d.overview, air: d.air_date, runtime: d.runtime,
     still: d.still_path, vote: d.vote_average || null, voteCount: d.vote_count || 0,
-    guests: (d.guest_stars || []).slice(0, 12).map(c => ({ name: c.name, character: c.character || '', profile: c.profile_path || null })),
+    guests: (d.guest_stars || []).slice(0, 12).map(c => ({ id: c.id, name: c.name, character: c.character || '', profile: c.profile_path || null })),
   };
   tmdbCache.episodes[ck] = meta; scheduleSaveCache();
   return meta;
@@ -527,7 +533,7 @@ async function getMovieMeta(tmdbId, force) {
 // --- extract enrichment sub-objects from a TMDB response ---
 function extractCast(credits) {
   return ((credits && credits.cast) || []).slice(0, 18)
-    .map(c => ({ name: c.name, character: c.character || '', profile: c.profile_path || null }));
+    .map(c => ({ id: c.id, name: c.name, character: c.character || '', profile: c.profile_path || null }));
 }
 function pickTrailer(videos) {
   const r = (videos && videos.results) || [];
@@ -706,14 +712,16 @@ function providersHtml(p) {
   if (!body) return '';
   return `<div class="about-block"><h3>Où regarder <span class="src">(FR)</span></h3>${body}${p.link ? `<a class="btn ghost sm" href="${esc(p.link)}" target="_blank" rel="noopener">Voir sur JustWatch ↗</a>` : ''}</div>`;
 }
-function castHtml(cast) {
-  if (!cast || !cast.length) return '';
-  return `<div class="about-block"><h3>Distribution</h3><div class="cast-list">${cast.map(c => `
-    <div class="cast-item">
+function castItemHtml(c) {
+  return `<div class="cast-item" data-pid="${esc(String(c.id || 0))}" data-pname="${esc(c.name || '')}" role="button" tabindex="0">
       <div class="cast-photo">${c.profile ? `<img loading="lazy" src="${IMG(c.profile, 'w185')}" alt="">` : `<span>${esc((c.name || '?').slice(0, 1))}</span>`}</div>
       <div class="cast-name">${esc(c.name)}</div>
       ${c.character ? `<div class="cast-char">${esc(c.character)}</div>` : ''}
-    </div>`).join('')}</div></div>`;
+    </div>`;
+}
+function castHtml(cast) {
+  if (!cast || !cast.length) return '';
+  return `<div class="about-block"><h3>Distribution</h3><div class="cast-list">${cast.map(castItemHtml).join('')}</div></div>`;
 }
 function trailerHtml(key) {
   if (!key) return '';
@@ -996,9 +1004,26 @@ function removeCustomEpisode(sh, season, number) {
 const routes = {};
 function route(name, fn) { routes[name] = fn; }
 function currentRoute() { return (location.hash || '#/library').slice(2); }
-// Remember where the user came from so "retour" on a show goes back to that
-// list (home / library / à suivre …) at the same scroll position.
-let backTarget = '#/home';
+// Navigation history of detail pages, so « ← Retour » always goes to the previous page
+// (list → série → acteur → film …) and the list keeps its scroll position.
+const DETAIL_ROUTES = ['show', 'movie', 'episode', 'person', 'preview'];
+const navStack = [];
+function trackNav(hash, name) {
+  if (!DETAIL_ROUTES.includes(name)) { navStack.length = 0; navStack.push(hash); return; }
+  if (navStack.length > 1 && navStack[navStack.length - 2] === hash) navStack.pop();
+  else if (navStack[navStack.length - 1] !== hash) navStack.push(hash);
+}
+// Going to the page we just came from = a real « back » (keeps browser history in sync).
+function navTo(hash) {
+  if (navStack.length > 1 && navStack[navStack.length - 2] === hash) history.back();
+  else location.hash = hash;
+}
+document.addEventListener('click', (ev) => {
+  const b = ev.target.closest && ev.target.closest('[data-back]');
+  if (!b) return;
+  ev.preventDefault();
+  if (navStack.length > 1) history.back(); else location.hash = b.dataset.back;
+});
 let lastShowKey = null;   // last opened show key (to auto-scroll to first unseen only on a fresh open)
 let homeEditOrder = false; // when true, the Séries section reorder arrows are shown
 let seriesTab = 'avoir';   // Séries page sub-tab: 'avoir' (categorised) | 'asuivre' (next episodes)
@@ -1006,11 +1031,11 @@ let exploreQuery = '';     // texte de recherche Explorer mémorisé (restauré 
 const scrollByHash = {};
 function openShow(key) {
   scrollByHash[location.hash || '#/home'] = window.scrollY;
-  location.hash = '#/show/' + encodeURIComponent(key);
+  navTo('#/show/' + encodeURIComponent(key));
 }
 function openMovie(name) {
   scrollByHash[location.hash || '#/movies'] = window.scrollY;
-  location.hash = '#/movie/' + encodeURIComponent(name);
+  navTo('#/movie/' + encodeURIComponent(name));
 }
 // Where the user was on a show page before opening an episode (restored on return).
 let showViewRestore = null;
@@ -1025,10 +1050,31 @@ function saveShowView(sh, row) {
 }
 function openEpisode(showKey, season, n) {
   scrollByHash[location.hash || '#/home'] = window.scrollY;
-  location.hash = '#/episode/' + encodeURIComponent(showKey) + '/' + season + '/' + n;
+  navTo('#/episode/' + encodeURIComponent(showKey) + '/' + season + '/' + n);
 }
-const BACK_LABELS = { home: 'Séries', library: 'Bibliothèque', upnext: 'À suivre', explore: 'Explorer', movies: 'Films', lists: 'Listes', stats: 'Statistiques', profile: 'Profil', settings: 'Réglages', changelog: 'Notes de version' };
-function backLabel() { return BACK_LABELS[(backTarget || '').replace(/^#\//, '').split('/')[0]] || 'Retour'; }
+function openPerson(id, name) {
+  scrollByHash[location.hash || '#/home'] = window.scrollY;
+  navTo('#/person/' + (parseInt(id, 10) || 0) + '/' + encodeURIComponent(name || ''));
+}
+document.addEventListener('click', (ev) => {
+  const c = ev.target.closest && ev.target.closest('.cast-item[data-pname]');
+  if (c) openPerson(c.dataset.pid, c.dataset.pname);
+});
+const BACK_LABELS = { home: 'Séries', library: 'Bibliothèque', upnext: 'À suivre', explore: 'Explorer', movies: 'Films', lists: 'Listes', stats: 'Statistiques', profile: 'Profil', settings: 'Réglages', changelog: 'Notes de version', episode: 'Épisode', preview: 'Aperçu' };
+// Label of the page « ← Retour » leads to (fallback = page used when there is no history).
+function backLabel(fallback) {
+  const prev = navStack.length > 1 ? navStack[navStack.length - 2] : fallback;
+  const [name, ...rest] = (prev || '').replace(/^#\//, '').split('/');
+  try {
+    if (name === 'show') { const sh = MODEL && MODEL.shows.get(decodeURIComponent(rest.join('/'))); if (sh) return displayName(sh); }
+    if (name === 'movie') return decodeURIComponent(rest.join('/'));
+    if (name === 'person') return decodeURIComponent(rest.slice(1).join('/')) || 'Fiche acteur';
+  } catch {}
+  return BACK_LABELS[name] || 'Retour';
+}
+function backBtn(fallback) {
+  return `<a class="btn ghost sm" href="${esc(fallback)}" data-back="${esc(fallback)}">← ${esc(backLabel(fallback))}</a>`;
+}
 
 // Basic slide transition when moving from one main category to another.
 let _lastTopRoute = null;
@@ -1064,7 +1110,7 @@ function _runSlide(el, snapObj, dir) {
 async function render() {
   document.querySelectorAll('.page-snap').forEach(n => n.remove()); // safety: never leave a frozen page behind
   const [name, ...rest] = currentRoute().split('/');
-  if (name !== 'show' && name !== 'movie' && name !== 'episode') backTarget = location.hash || '#/home';
+  trackNav(location.hash || '#/home', name);
   if (name !== 'show' && name !== 'episode') { lastShowKey = null; showViewRestore = null; } // re-opening a show counts as a fresh visit
   // Library / stats / lists / settings live under the "Profil" tab.
   const navName = ['library', 'stats', 'lists', 'settings', 'changelog'].includes(name) ? 'profile' : (name === 'preview' ? 'explore' : name);
@@ -1686,13 +1732,13 @@ route('movie', async (el, rest) => {
   const genres = meta ? meta.genres.join(' · ') : '';
   const subBits = [year, rtStr, genres].filter(Boolean).map(esc).join(' · ');
   el.innerHTML = `
-    <a class="btn ghost sm" href="${esc(backTarget || '#/movies')}">← ${esc(backLabel())}</a>
-    <div class="detail-hero" style="margin-top:12px">
+    ${backBtn('#/movies')}
+    <div class="detail-hero title-top" style="margin-top:12px">
       <div class="bg" style="${meta && meta.backdrop ? `background-image:url(${IMG(meta.backdrop, 'w780')})` : ''}"></div>
       <div class="inner">
+        <h1>${esc(meta && meta.title ? meta.title : m.name)}</h1>
         <div class="poster">${meta && meta.poster ? `<img src="${IMG(meta.poster)}" alt="">` : `<div class="fallback-title">${esc(m.name)}</div>`}</div>
         <div>
-          <h1>${esc(meta && meta.title ? meta.title : m.name)}</h1>
           <div class="sub">${subBits}${meta && meta.vote ? (subBits ? ' · ' : '') + '⭐ ' + meta.vote.toFixed(1) : ''}</div>
           ${meta && meta.tagline ? `<div class="sub" style="font-style:italic;margin-top:4px">${esc(meta.tagline)}</div>` : ''}
           <div class="tags">
@@ -2156,7 +2202,7 @@ route('show', async (el, rest) => {
 
   const genres = meta ? meta.genres.join(' · ') : '';
   el.innerHTML = `
-    <a class="btn ghost sm" href="${esc(backTarget || '#/home')}">← ${esc(backLabel())}</a>
+    ${backBtn('#/home')}
     <div class="detail-hero" style="margin-top:12px">
       <div class="bg" style="${meta && meta.backdrop ? `background-image:url(${IMG(meta.backdrop, 'w780')})` : ''}"></div>
       <div class="inner">
@@ -2256,34 +2302,29 @@ route('episode', async (el, rest) => {
     infoRow('Note du public', ep && ep.vote ? `⭐ ${ep.vote.toFixed(1)}/10 <span class="muted">(${ep.voteCount})</span>` : ''),
   ].join('');
   const guestsHtml = (ep && ep.guests && ep.guests.length)
-    ? `<div class="about" style="margin-top:16px"><div class="about-block"><h3>Invités</h3><div class="cast-list">${ep.guests.map(c => `<div class="cast-item"><div class="cast-photo">${c.profile ? `<img loading="lazy" src="${IMG(c.profile, 'w185')}" alt="">` : `<span>${esc((c.name || '?').slice(0, 1))}</span>`}</div><div class="cast-name">${esc(c.name)}</div>${c.character ? `<div class="cast-char">${esc(c.character)}</div>` : ''}</div>`).join('')}</div></div></div>`
+    ? `<div class="about" style="margin-top:16px"><div class="about-block"><h3>Invités</h3><div class="cast-list">${ep.guests.map(castItemHtml).join('')}</div></div></div>`
     : '';
 
+  const stillImg = ep && ep.still ? `<img src="${IMG(ep.still, 'w780')}" alt="">` : `<div class="ep-still-ph">${season}×${String(n).padStart(2, '0')}</div>`;
   el.innerHTML = `
-    <a class="btn ghost sm" href="#/show/${encodeURIComponent(sh.key)}">← ${esc(displayName(sh))}</a>
-    <div class="detail-hero ep-hero" style="margin-top:12px">
-      <div class="inner">
-        <div class="ep-still">${ep && ep.still ? `<img src="${IMG(ep.still, 'w300')}" alt="">` : `<div class="ep-still-ph">${season}×${String(n).padStart(2, '0')}</div>`}</div>
-        <div>
-          <h1>${esc(title)}</h1>
-          <div class="sub">Saison ${season} · Épisode ${n}</div>
-          <div class="detail-actions">
-            <button class="btn ${seen ? 'primary' : ''}" id="epSeen">${seen ? '✓ Vu' : 'Marquer comme vu'}</button>
-            <button class="btn" id="epRw">🔁 +1 visionnage${rw > 0 ? ` (×${rw + 1})` : ''}</button>
-          </div>
-          <div class="ep-react">
-            <span class="react-label">Ma note</span>
-            <div class="stars" data-id="epRate">${[1, 2, 3, 4, 5].map(v => `<span class="s ${v <= rating ? 'on' : ''}" data-v="${v}">★</span>`).join('')}<button type="button" class="star-clear" title="Retirer ma note"${rating > 0 ? '' : ' hidden'}>✕</button></div>
-            <span class="react-label">Ma réaction</span>
-            <div class="react" data-act="emo">${EMOTIONS.slice(0, 5).map(em => `<button data-e="${em.id}" title="${esc(em.label)}" class="${emo === em.id ? 'on' : ''}">${em.emoji}</button>`).join('')}</div>
-          </div>
-        </div>
+    ${backBtn('#/show/' + encodeURIComponent(sh.key))}
+    <div class="ep-page">
+      <h1 class="ep-title">${esc(title)}</h1>
+      <div class="ep-num">Saison ${season} · Épisode ${n}</div>
+      <div class="ep-visual">${stillImg}</div>
+      <p class="synopsis-text ep-synopsis">${esc(overviewTxt)}</p>
+      <div class="detail-actions">
+        <button class="btn ${seen ? 'primary' : ''}" id="epSeen">${seen ? '✓ Vu' : 'Marquer comme vu'}</button>
+        <button class="btn" id="epRw">🔁 +1 visionnage${rw > 0 ? ` (×${rw + 1})` : ''}</button>
+      </div>
+      <div class="ep-react">
+        <span class="react-label">Ma note</span>
+        <div class="stars" data-id="epRate">${[1, 2, 3, 4, 5].map(v => `<span class="s ${v <= rating ? 'on' : ''}" data-v="${v}">★</span>`).join('')}<button type="button" class="star-clear" title="Retirer ma note"${rating > 0 ? '' : ' hidden'}>✕</button></div>
+        <span class="react-label">Ma réaction</span>
+        <div class="react" data-act="emo">${EMOTIONS.slice(0, 5).map(em => `<button data-e="${em.id}" title="${esc(em.label)}" class="${emo === em.id ? 'on' : ''}">${em.emoji}</button>`).join('')}</div>
       </div>
     </div>
-    <div class="about" style="margin-top:16px">
-      <div class="about-block"><h3>Synopsis</h3><p class="synopsis-text">${esc(overviewTxt)}</p></div>
-      ${infoBlock(rows)}
-    </div>
+    ${rows ? `<div class="about" style="margin-top:16px">${infoBlock(rows)}</div>` : ''}
     ${guestsHtml}`;
 
   el.querySelector('#epSeen').onclick = () => {
@@ -2790,26 +2831,7 @@ route('explore', async (el) => {
     <div id="expResults" class="explore-results"><p class="home-empty">Tapez un titre ci-dessus pour trouver des séries et des films.</p></div>`
       : needKeyHtml("L'exploration a besoin d'une clé TMDB pour rechercher des séries et des films.")}`;
   if (!hasKey()) return;
-  // Lookups to detect works already in the library (so search results aren't
-  // shown as if brand new).
-  buildModel();
-  const norm = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-  const showByTmdb = new Map(), showByName = new Map();
-  for (const s of MODEL.shows.values()) {
-    const tid = s.forcedTmdb || (s.tvdbId != null ? tmdbCache.map[s.tvdbId] : null);
-    if (tid != null) showByTmdb.set(String(tid), s.key);
-    showByName.set(norm(displayName(s)), s.key);
-  }
-  const allMovies = (DATA.movies || []).concat(userState.customMovies || []);
-  const movieByTmdb = new Map(), movieByName = new Map();
-  for (const m of allMovies) {
-    const rec = userState.movieTmdb && userState.movieTmdb[m.name];
-    if (rec && rec.id != null) movieByTmdb.set(String(rec.id), m.name);
-    movieByName.set(norm(m.name), m.name);
-  }
-  const ownedKey = (h) => h.media_type === 'tv'
-    ? (showByTmdb.get(String(h.id)) || showByName.get(norm(h.name || h.title || '')) || null)
-    : (movieByTmdb.get(String(h.id)) || movieByName.get(norm(h.title || h.name || '')) || null);
+  const ownedKey = ownedLookup();
   const input = el.querySelector('#expQ');
   const results = el.querySelector('#expResults');
   input.value = exploreQuery;
@@ -2848,7 +2870,7 @@ route('explore', async (el) => {
         // Already in the library -> open the real tracked page, not a preview.
         if (key && h.media_type === 'tv') { openShow(key); return; }
         if (key && h.media_type === 'movie') { openMovie(key); return; }
-        location.hash = '#/preview/' + (h.media_type === 'tv' ? 'tv' : 'movie') + '/' + h.id;
+        navTo('#/preview/' + (h.media_type === 'tv' ? 'tv' : 'movie') + '/' + h.id);
       });
     } catch { if (my === seq) results.innerHTML = `<div class="empty">Erreur de recherche.</div>`; }
   };
@@ -2860,7 +2882,7 @@ route('explore', async (el) => {
 route('preview', async (el, rest) => {
   const kind = rest[0];
   const id = parseInt(rest[1], 10);
-  el.innerHTML = `<a class="btn ghost sm" href="#/explore">← Explorer</a><div id="pv"><div class="loading">Chargement de l'aperçu…</div></div>`;
+  el.innerHTML = `${backBtn('#/explore')}<div id="pv"><div class="loading">Chargement de l'aperçu…</div></div>`;
   const pv = el.querySelector('#pv');
   if (!hasKey()) { pv.innerHTML = needKeyHtml("L'aperçu a besoin d'une clé TMDB."); return; }
   try {
@@ -2910,6 +2932,120 @@ route('preview', async (el, rest) => {
       pv.querySelector('#pvAdd').onclick = () => { addCustomMovie({ id, title: meta.title, release_date: meta.release, poster_path: meta.poster }); openMovie(meta.title); };
     }
   } catch { pv.innerHTML = `<div class="empty"><div class="big">⚠️</div>Impossible de charger l'aperçu.</div>`; }
+});
+
+// Returns (tmdbHit) -> key of the matching show/movie already in the library, or null.
+function ownedLookup() {
+  buildModel();
+  const norm = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  const showByTmdb = new Map(), showByName = new Map();
+  for (const s of MODEL.shows.values()) {
+    const tid = s.forcedTmdb || (s.tvdbId != null ? tmdbCache.map[s.tvdbId] : null);
+    if (tid != null) showByTmdb.set(String(tid), s.key);
+    showByName.set(norm(displayName(s)), s.key);
+  }
+  const movieByTmdb = new Map(), movieByName = new Map();
+  for (const m of (DATA.movies || []).concat(userState.customMovies || [])) {
+    const rec = userState.movieTmdb && userState.movieTmdb[m.name];
+    if (rec && rec.id != null) movieByTmdb.set(String(rec.id), m.name);
+    movieByName.set(norm(m.name), m.name);
+  }
+  return (h) => h.media_type === 'tv'
+    ? (showByTmdb.get(String(h.id)) || showByName.get(norm(h.name || h.title || '')) || null)
+    : (movieByTmdb.get(String(h.id)) || movieByName.get(norm(h.title || h.name || '')) || null);
+}
+
+//////////////////////// Fiche acteur ////////////////////////
+async function getPersonMeta(id) {
+  if (!tmdbCache.people) tmdbCache.people = {};
+  const c = tmdbCache.people[id];
+  if (c && Date.now() - (c.at || 0) < 30 * MS_DAY) return c;
+  const d = await tmdbFetch(`/person/${id}?append_to_response=combined_credits,external_ids`);
+  let bio = d.biography || '';
+  if (!bio) { try { bio = (await tmdbFetch(`/person/${id}`, 'en-US')).biography || ''; } catch {} }
+  const seen = new Set();
+  const credits = ((d.combined_credits && d.combined_credits.cast) || [])
+    .filter(x => (x.media_type === 'tv' || x.media_type === 'movie') && !(x.genre_ids || []).some(g => g === 10767 || g === 10763))
+    .filter(x => { const k = x.media_type + x.id; if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a, b) => (b.vote_count || 0) - (a.vote_count || 0))
+    .slice(0, 40)
+    .map(x => ({ media_type: x.media_type, id: x.id, name: x.name || x.title || '', year: (x.first_air_date || x.release_date || '').slice(0, 4), poster: x.poster_path || null, character: x.character || '' }));
+  const p = {
+    at: Date.now(), id, name: d.name, profile: d.profile_path || null, bio,
+    birthday: d.birthday || null, deathday: d.deathday || null, place: d.place_of_birth || '',
+    dept: d.known_for_department || '', gender: d.gender || 0,
+    imdb: (d.external_ids && d.external_ids.imdb_id) || d.imdb_id || null, credits,
+  };
+  tmdbCache.people[id] = p; scheduleSaveCache();
+  return p;
+}
+function personRole(p) {
+  const f = p.gender === 1;
+  const map = { Acting: f ? 'Actrice' : 'Acteur', Directing: f ? 'Réalisatrice' : 'Réalisateur', Writing: f ? 'Scénariste' : 'Scénariste', Production: f ? 'Productrice' : 'Producteur' };
+  return map[p.dept] || p.dept || '';
+}
+function ageBetween(from, to) {
+  const a = new Date(from), b = to ? new Date(to) : new Date();
+  if (isNaN(a) || isNaN(b)) return null;
+  let y = b.getFullYear() - a.getFullYear();
+  if (b.getMonth() < a.getMonth() || (b.getMonth() === a.getMonth() && b.getDate() < a.getDate())) y--;
+  return y;
+}
+route('person', async (el, rest) => {
+  let id = parseInt(rest[0], 10) || 0;
+  const name = decodeURIComponent(rest.slice(1).join('/'));
+  const wiki = `https://fr.wikipedia.org/w/index.php?search=${encodeURIComponent(name)}`;
+  el.innerHTML = `${backBtn('#/home')}<div id="ps"><div class="loading">Chargement…</div></div>`;
+  const box = el.querySelector('#ps');
+  const fallback = (msg) => `<div class="empty">${msg}<br><br><a class="btn" href="${esc(wiki)}" target="_blank" rel="noopener">Ouvrir Wikipédia ↗</a></div>`;
+  if (!hasKey()) { box.innerHTML = fallback(`Pas de clé TMDB : impossible d'afficher la fiche de ${esc(name)}.`); return; }
+  try {
+    if (!id && name) {
+      const r = await tmdbFetch(`/search/person?query=${encodeURIComponent(name)}`);
+      id = r.results && r.results[0] ? r.results[0].id : 0;
+    }
+    if (!id) { box.innerHTML = fallback(`Aucune fiche trouvée pour ${esc(name)}.`); return; }
+    const p = await getPersonMeta(id);
+    const age = p.birthday ? ageBetween(p.birthday, p.deathday) : null;
+    const f = p.gender === 1;
+    const rows = [
+      infoRow(f ? 'Née' : 'Né', p.birthday ? fmtFull(p.birthday) + (p.place ? ` à ${esc(p.place)}` : '') : ''),
+      infoRow(f ? 'Décédée' : 'Décédé', p.deathday ? fmtFull(p.deathday) : ''),
+    ].join('');
+    const ownedKey = ownedLookup();
+    const credits = p.credits.map(c => ({ ...c, owned: ownedKey(c) }))
+      .sort((a, b) => (b.owned ? 1 : 0) - (a.owned ? 1 : 0));
+    box.innerHTML = `
+      <div class="person-hero">
+        <div class="person-photo">${p.profile ? `<img src="${IMG(p.profile, 'w342')}" alt="">` : esc((p.name || '?').slice(0, 1))}</div>
+        <div>
+          <h1>${esc(p.name)}</h1>
+          <div class="sub">${esc(personRole(p))}${age != null ? ` · ${age} ans` : ''}</div>
+          <div class="detail-actions">
+            <a class="btn" href="${esc(wiki)}" target="_blank" rel="noopener">Wikipédia ↗</a>
+            ${p.imdb ? `<a class="btn ghost" href="https://www.imdb.com/name/${encodeURIComponent(p.imdb)}/" target="_blank" rel="noopener">IMDb ↗</a>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="about" style="margin-top:16px">
+        ${infoBlock(rows)}
+        ${p.bio ? `<div class="about-block"><h3>Biographie</h3><p class="synopsis-text bio clamp">${esc(p.bio)}</p><button class="btn sm ghost" id="bioMore">Lire la suite</button></div>` : ''}
+        ${credits.length ? `<div class="about-block"><h3>Filmographie</h3><div class="ps-grid">${credits.map((c, i) => `
+          <div class="exp-hit${c.owned ? ' owned' : ''}" data-open="${i}">
+            <div class="ps-poster">${c.poster ? `<img loading="lazy" src="${IMG(c.poster, 'w185')}" alt="">` : `<div class="fallback-title">${esc(c.name)}</div>`}<span class="badge-tag">${c.media_type === 'tv' ? '📺 Série' : '🎬 Film'}</span>${c.owned ? `<span class="owned-badge">✓ Ma liste</span>` : ''}</div>
+            <div class="ps-name">${esc(c.name)}${c.year ? ` <span>(${c.year})</span>` : ''}</div>
+            ${c.character ? `<div class="ps-char">${esc(c.character)}</div>` : ''}
+          </div>`).join('')}</div></div>` : ''}
+      </div>`;
+    const more = box.querySelector('#bioMore');
+    if (more) more.onclick = () => { const b = box.querySelector('.bio'); const open = b.classList.toggle('clamp'); more.textContent = open ? 'Lire la suite' : 'Réduire'; };
+    box.querySelectorAll('.exp-hit').forEach(card => card.onclick = () => {
+      const c = credits[parseInt(card.dataset.open, 10)];
+      if (c.owned && c.media_type === 'tv') { openShow(c.owned); return; }
+      if (c.owned) { openMovie(c.owned); return; }
+      navTo('#/preview/' + c.media_type + '/' + c.id);
+    });
+  } catch { box.innerHTML = fallback(`Impossible de charger la fiche de ${esc(name)}.`); }
 });
 
 async function computeNextEpisode(sh) {

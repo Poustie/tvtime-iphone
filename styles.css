@@ -118,6 +118,10 @@ main {
 .explore-search { margin-bottom: 18px; }
 .explore-search .input { width: 100%; font-size: 15px; padding: 12px 16px; border-radius: 12px; }
 .explore-results .ps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 18px; margin-top: 4px; }
+.about-block .ps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); gap: 8px; }
+.about-block .exp-hit { border-radius: 10px; overflow: hidden; background: var(--card); }
+.about-block .exp-hit .badge-tag { font-size: 8.5px; padding: 1px 5px; top: 4px; left: 4px; }
+.about-block .exp-hit .owned-badge { font-size: 8.5px; padding: 2px 5px; white-space: nowrap; left: 50%; right: auto; transform: translateX(-50%); }
 .pv-seasons { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 20px; }
 .exp-hit { cursor: pointer; text-align: left; display: block; }
 .exp-hit:hover .ps-poster { outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -204,6 +208,8 @@ main {
 .detail-hero .inner { position: relative; display: flex; gap: 22px; padding: 22px; align-items: flex-end; }
 .detail-hero .poster { width: 150px; flex: none; }
 .detail-hero h1 { margin: 0 0 6px; font-size: 26px; }
+.detail-hero.title-top .inner { flex-wrap: wrap; }
+.detail-hero.title-top .inner > h1 { flex-basis: 100%; margin: 0; line-height: 1.2; }
 .detail-hero .tags { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
 .detail-hero .overview { color: #cbd5e1; font-size: 13px; max-width: 640px; line-height: 1.5;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
@@ -232,7 +238,15 @@ main {
 .info-value .stars .s { color: var(--line); font-size: 16px; }
 .info-value .stars .s.on { color: var(--accent); }
 .cast-list { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 6px; -webkit-overflow-scrolling: touch; }
-.cast-item { width: 92px; flex: none; text-align: center; }
+.cast-item { width: 92px; flex: none; text-align: center; cursor: pointer; }
+.cast-item:hover .cast-name { color: var(--accent); }
+.person-hero { display: flex; gap: 16px; align-items: flex-start; margin-top: 12px; }
+.person-photo { width: 120px; flex: none; aspect-ratio: 2 / 3; border-radius: var(--radius); overflow: hidden; background: var(--bg3); display: flex; align-items: center; justify-content: center; font-size: 40px; color: var(--muted); }
+.person-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.person-hero h1 { margin: 0 0 4px; font-size: 22px; line-height: 1.2; }
+.bio.clamp { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+.bio + .btn { margin-top: 8px; }
+.ps-char { font-size: 11px; color: var(--muted); line-height: 1.25; padding: 0 8px 8px; margin-top: -2px; }
 .cast-photo { width: 92px; height: 92px; border-radius: 50%; overflow: hidden; background: var(--bg3); display: flex; align-items: center; justify-content: center; margin: 0 auto 6px; }
 .cast-photo img { width: 100%; height: 100%; object-fit: cover; }
 .cast-photo span { font-size: 30px; color: var(--muted); }
@@ -271,12 +285,15 @@ main {
 .ep .epname[data-act="open"] { cursor: pointer; }
 .ep .epname[data-act="open"]:hover { color: var(--accent); }
 
-/* Episode detail page */
-.ep-hero { background: transparent; box-shadow: none; min-height: 0; border-radius: 0; overflow: visible; margin-bottom: 0; }
-.ep-hero .inner { padding: 0; align-items: flex-start; }
-.ep-hero .ep-still { width: 240px; max-width: 100%; flex: none; aspect-ratio: 16/9; border-radius: var(--radius); overflow: hidden; background: var(--bg3); box-shadow: var(--shadow); display: flex; align-items: center; justify-content: center; }
-.ep-hero .ep-still img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.ep-hero .ep-still-ph { color: var(--muted); font-size: 24px; font-weight: 800; }
+/* Episode detail page: title, number, then a full-width still fading to black into the synopsis */
+.ep-page { max-width: 780px; margin: 12px auto 0; }
+.ep-title { font-size: 22px; line-height: 1.2; margin: 0 0 4px; }
+.ep-num { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+.ep-visual { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: var(--radius) var(--radius) 0 0; overflow: hidden; background: var(--bg3); display: flex; align-items: center; justify-content: center; }
+.ep-visual img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ep-visual::after { content: ''; position: absolute; inset: 0; background: linear-gradient(to bottom, rgba(0,0,0,0) 35%, var(--bg) 100%); pointer-events: none; }
+.ep-visual .ep-still-ph { color: var(--muted); font-size: 32px; font-weight: 800; }
+.ep-synopsis { position: relative; z-index: 1; margin: -22px 0 14px; font-size: 14.5px; }
 .ep-react { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 10px 0 2px; }
 .ep-react .react-label { color: var(--muted); font-size: 12px; }
 .ep-react .react { display: flex; gap: 6px; }
