@@ -24,7 +24,8 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys().then((keys) => Promise.all(
-      keys.filter((k) => ![SHELL, IMG, API].includes(k)).map((k) => caches.delete(k))
+      // Même origine que les autres applis de poustie.github.io : ne toucher qu'aux caches montvtime
+      keys.filter((k) => k.includes('-montvtime-v') && ![SHELL, IMG, API].includes(k)).map((k) => caches.delete(k))
     )).then(() => self.clients.claim())
   );
 });
