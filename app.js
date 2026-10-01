@@ -11,6 +11,9 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 26, date: '1er octobre 2026', title: 'Correction du défilement', items: [
+    'La page Séries ne remonte plus toute seule quand on fait défiler : la mise à jour des séries en cours se fait en arrière-plan, une seule fois, sans bouger la page.',
+  ] },
   { id: 25, date: '1er octobre 2026', title: 'Épisode suivant / précédent', items: [
     'Sur la fiche d\'un épisode, glissez vers la gauche pour passer à l\'épisode suivant, vers la droite pour le précédent (aussi avec les boutons ‹ ›). Le bouton « ← » ramène toujours directement à la série.',
   ] },
@@ -1588,9 +1591,12 @@ async function renderSeriesAvoir(el, shows) {
     render();
   });
 
-  // One-time: fetch airing dates for currently-running shows so the
-  // "nouvel épisode récent -> À voir" rule can apply, then re-render.
-  if (await refreshAiringDates(shows)) render();
+  // Fetch fresh airing info for running shows in the background, then re-render in place (same scroll position).
+  refreshAiringDates(shows).then(changed => {
+    if (!changed || currentRoute().split('/')[0] !== 'home') return;
+    scrollByHash[location.hash] = window.scrollY;
+    render();
+  });
 }
 
 // Cached TMDB meta for a show (no network).
@@ -1612,21 +1618,25 @@ function airedTotal(m) {
 
 // Refetch meta of running shows when it is missing airing fields, when the
 // announced next episode date has passed, or when it is over a week old.
+// Each show is tried at most once per session (TMDB can keep a past date).
+const _airTried = new Set();
 async function refreshAiringDates(shows) {
   if (!hasKey()) return false;
   const todo = [];
   for (const sh of shows) {
+    if (_airTried.has(sh.key)) continue;
     const m = metaFor(sh);
     if (!m || m.status !== 'Returning Series') continue;
-    const stale = !('lastEp' in m) || (m.nextAir && daysSince(m.nextAir) >= 0) || (Date.now() - (m.fetchedAt || 0)) > 7 * MS_DAY;
-    if (stale) todo.push(sh);
+    const age = Date.now() - (m.fetchedAt || 0);
+    const stale = !('lastEp' in m) || (m.nextAir && daysSince(m.nextAir) >= 0 && age > MS_DAY / 2) || age > 7 * MS_DAY;
+    if (stale) { todo.push(sh); _airTried.add(sh.key); }
   }
   if (!todo.length) return false;
   let i = 0;
   const worker = async () => {
     while (i < todo.length) {
       const sh = todo[i++];
-      const id = tmdbCache.map[sh.tvdbId];
+      const id = sh.forcedTmdb || tmdbCache.map[sh.tvdbId];
       if (!id) continue;
       try { await getShowMeta(id, true); } catch {}
     }
