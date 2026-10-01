@@ -1,6 +1,6 @@
 /* Service worker: caches the app shell, TMDB posters and TMDB API responses
    so the app loads instantly and works offline (posters stay cached). */
-const VERSION = 'montvtime-v84';
+const VERSION = 'montvtime-v87';
 const SHELL = 'shell-' + VERSION;
 const IMG = 'img-' + VERSION;
 const API = 'api-' + VERSION;
@@ -24,8 +24,7 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys().then((keys) => Promise.all(
-      // Même origine que les autres applis de poustie.github.io : ne toucher qu'aux caches montvtime
-      keys.filter((k) => k.includes('-montvtime-v') && ![SHELL, IMG, API].includes(k)).map((k) => caches.delete(k))
+      keys.filter((k) => ![SHELL, IMG, API].includes(k)).map((k) => caches.delete(k))
     )).then(() => self.clients.claim())
   );
 });

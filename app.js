@@ -11,6 +11,17 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 25, date: '1er octobre 2026', title: 'Épisode suivant / précédent', items: [
+    'Sur la fiche d\'un épisode, glissez vers la gauche pour passer à l\'épisode suivant, vers la droite pour le précédent (aussi avec les boutons ‹ ›). Le bouton « ← » ramène toujours directement à la série.',
+  ] },
+  { id: 24, date: '1er octobre 2026', title: 'Épisodes pas encore sortis', items: [
+    'Une série dont vous avez vu tous les épisodes déjà diffusés passe bien dans « Terminée » (barre verte = suite prévue), même si une prochaine saison est déjà annoncée avec des épisodes (ex. Silo saison 4 en 2027). Elle revient dans « En cours » dès la sortie du nouvel épisode.',
+    'La fiche série indique le nombre d\'épisodes « à venir ».',
+  ] },
+  { id: 23, date: '1er octobre 2026', title: 'Sauvegarde hebdomadaire', items: [
+    'Une fois par semaine, l\'application vous propose d\'enregistrer une sauvegarde complète (fichier « tvtime-sauvegarde-hebdo.json » dans Téléchargements) : si les données du navigateur sont effacées, il suffit de la réimporter.',
+    'Réglages → Sauvegarde affiche la date de la dernière sauvegarde, et permet de désactiver le rappel.',
+  ] },
   { id: 22, date: '28 septembre 2026', title: 'Fiches épisodes & acteurs', items: [
     'Nouvelle fiche épisode : le titre et le numéro en haut, puis l\'image en grand qui se fond dans le noir jusqu\'au synopsis.',
     'Fiches films et séries (et aperçus) : le titre passe au-dessus de l\'affiche.',
@@ -156,6 +167,9 @@ let userState = {
   rewatching: {}, // showKey -> true : nouveau visionnage en cours d'une série terminée
   rewatchAt: {}, // epKey -> timestamp du dernier « +1 visionnage » (appartenance au revisionnage en cours)
   rewatchActivity: {}, // showKey -> date "YYYY-MM-DD HH:MM:SS" du dernier revisionnage (tri « En cours »)
+  lastBackupAt: null, // date ISO de la dernière sauvegarde exportée
+  weeklyBackup: true, // proposer une sauvegarde chaque semaine (mode téléphone)
+  backupSnoozeUntil: 0, // « Plus tard » : ne pas reproposer avant ce timestamp
   favShows: {},    // showKey -> true/false : override the imported "favori" flag
   favMovies: {},   // movieName -> true : films favoris
   profileName: '', // nom affiché dans « Bonjour … » (paramétrable, override du nom importé)
@@ -501,6 +515,8 @@ async function getShowMeta(tmdbId, force) {
     seasons: (d.seasons || []).filter(s => s.season_number > 0).map(s => ({ n: s.season_number, count: s.episode_count })),
     totalEpisodes: d.number_of_episodes,
     lastAir: (d.last_episode_to_air && d.last_episode_to_air.air_date) || null,
+    lastEp: d.last_episode_to_air ? { s: d.last_episode_to_air.season_number, n: d.last_episode_to_air.episode_number } : null,
+    fetchedAt: Date.now(),
     nextAir: (d.next_episode_to_air && d.next_episode_to_air.air_date) || null,
     vote: d.vote_average || null, voteCount: d.vote_count || 0,
     cast: extractCast(d.credits),
@@ -771,7 +787,7 @@ function showAboutHtml(sh, meta) {
     infoRow('Genre', meta.genres.length ? esc(meta.genres.join(', ')) : ''),
     infoRow('Première diffusion', meta.firstAir ? fmtFull(meta.firstAir) : ''),
     infoRow('Statut', meta.status ? esc(statusFr(meta.status)) : ''),
-    infoRow('Épisodes', meta.totalEpisodes ? `${sh.seenKeys.size} vus / ${meta.totalEpisodes}` : (sh.seenKeys.size ? `${sh.seenKeys.size} vus` : '')),
+    infoRow('Épisodes', meta.totalEpisodes ? `${sh.seenKeys.size} vus / ${airedTotal(meta)}${meta.totalEpisodes > airedTotal(meta) ? ` (+${meta.totalEpisodes - airedTotal(meta)} à venir)` : ''}` : (sh.seenKeys.size ? `${sh.seenKeys.size} vus` : '')),
     infoRow('Note du public', meta.vote ? `⭐ ${meta.vote.toFixed(1)}/10 <span class="muted">(${meta.voteCount})</span>` : ''),
     infoRow('Ma note', starsHtml('aboutShowRate', sh.showRating || 0)),
     infoRow('Mes visionnages', watchInfo),
@@ -1008,7 +1024,10 @@ function currentRoute() { return (location.hash || '#/library').slice(2); }
 // (list → série → acteur → film …) and the list keeps its scroll position.
 const DETAIL_ROUTES = ['show', 'movie', 'episode', 'person', 'preview'];
 const navStack = [];
+let _navReplace = false;   // next navigation replaces the current page (episode → episode)
+let _pendingSlideDir = 0;  // slide animation to play on the next render (1 = from the right)
 function trackNav(hash, name) {
+  if (_navReplace) { _navReplace = false; navStack[Math.max(0, navStack.length - 1)] = hash; return; }
   if (!DETAIL_ROUTES.includes(name)) { navStack.length = 0; navStack.push(hash); return; }
   if (navStack.length > 1 && navStack[navStack.length - 2] === hash) navStack.pop();
   else if (navStack[navStack.length - 1] !== hash) navStack.push(hash);
@@ -1122,6 +1141,7 @@ async function render() {
     dir = SWIPE_ROUTES.indexOf(newTop) > SWIPE_ROUTES.indexOf(_lastTopRoute) ? 1 : -1;
   }
   _lastTopRoute = newTop;
+  if (_pendingSlideDir) { dir = _pendingSlideDir; _pendingSlideDir = 0; }
   const el = document.getElementById('app');
   el.style.transition = ''; el.style.transform = ''; el.classList.remove('page-anim');
   const snapObj = dir !== 0 ? _makeSnapshot() : null;
@@ -1493,7 +1513,7 @@ async function renderSeriesAvoir(el, shows) {
     const started = s.seenKeys.size > 0;
     if (!started) { if (s.followed) notStarted.push(s); continue; }
     const m = metaFor(s);
-    const total = m && m.totalEpisodes > 0 ? m.totalEpisodes : 0;
+    const total = airedTotal(m);
     const done = total > 0 && s.seenKeys.size >= total;
     const newEp = m && m.lastAir && daysSince(m.lastAir) <= RECENT_DAYS; // épisode sorti récemment
     // Nouveaux épisodes sortis APRÈS votre dernier visionnage (nouvelle saison récente).
@@ -1579,15 +1599,27 @@ function metaFor(sh) {
   const id = sh.forcedTmdb || (sh.tvdbId != null ? tmdbCache.map[sh.tvdbId] : null);
   return id ? (tmdbCache.shows[id] || null) : null;
 }
+// Episodes already broadcast. TMDB's total also counts announced future episodes
+// (e.g. a next season listed with 1 episode a year ahead).
+function airedTotal(m) {
+  if (!m || !(m.totalEpisodes > 0)) return 0;
+  const le = m.lastEp;
+  if (!le || !m.nextAir) return m.totalEpisodes;
+  let n = le.n;
+  for (const s of m.seasons || []) if (s.n < le.s) n += s.count;
+  return Math.max(1, Math.min(m.totalEpisodes, n));
+}
 
-// Refetch meta (to get lastAir/nextAir) for running shows whose cache predates
-// those fields. Bounded + cached to disk, so it runs at most once.
+// Refetch meta of running shows when it is missing airing fields, when the
+// announced next episode date has passed, or when it is over a week old.
 async function refreshAiringDates(shows) {
   if (!hasKey()) return false;
   const todo = [];
   for (const sh of shows) {
     const m = metaFor(sh);
-    if (m && m.status === 'Returning Series' && !('lastAir' in m)) todo.push(sh);
+    if (!m || m.status !== 'Returning Series') continue;
+    const stale = !('lastEp' in m) || (m.nextAir && daysSince(m.nextAir) >= 0) || (Date.now() - (m.fetchedAt || 0)) > 7 * MS_DAY;
+    if (stale) todo.push(sh);
   }
   if (!todo.length) return false;
   let i = 0;
@@ -2015,7 +2047,7 @@ route('library', async (el) => {
 // Progress of a show: null (nothing to show), or { pct, cls }.
 // orange = en cours ; green = tout vu mais suite prévue ; purple = tout vu et terminé.
 function showProgress(s, m) {
-  const total = m && m.totalEpisodes > 0 ? m.totalEpisodes : 0;
+  const total = airedTotal(m);
   const seen = s.seenKeys.size;
   if (!total || seen <= 0) return null;
   if (seen >= total) {
@@ -2140,7 +2172,8 @@ document.addEventListener('touchstart', (e) => {
   const t = e.target;
   if (t.closest && t.closest('.cast-list, .sort-chips, .pv-seasons, .react, input, textarea, select')) return;
   if (document.getElementById('modalRoot') && document.getElementById('modalRoot').children.length) return;
-  if (!SWIPE_ROUTES.includes(currentRoute().split('/')[0])) return;
+  const r = currentRoute().split('/')[0];
+  if (!SWIPE_ROUTES.includes(r) && r !== 'episode') return;
   _swOn = true; _swX = e.touches[0].clientX; _swY = e.touches[0].clientY;
 }, { passive: true });
 document.addEventListener('touchend', (e) => {
@@ -2149,6 +2182,7 @@ document.addEventListener('touchend', (e) => {
   const dx = e.changedTouches[0].clientX - _swX;
   const dy = e.changedTouches[0].clientY - _swY;
   if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 2) return; // require a clear horizontal swipe
+  if (currentRoute().split('/')[0] === 'episode') { goToNeighborEpisode(dx < 0 ? 'next' : 'prev'); return; }
   let i = SWIPE_ROUTES.indexOf(currentRoute().split('/')[0]);
   if (i < 0) return;
   i += (dx < 0 ? 1 : -1); // swipe left = next category, swipe right = previous
@@ -2211,7 +2245,7 @@ route('show', async (el, rest) => {
         <div>
           <div class="sub">${meta ? esc((meta.firstAir || '').slice(0, 4)) + (meta.status ? ' · ' + esc(statusFr(meta.status)) : '') : ''} ${genres ? '· ' + esc(genres) : ''}</div>
           <div class="tags">
-            <span class="chip">${sh.seenKeys.size} épisode(s) vu(s)${meta && meta.totalEpisodes ? ' / ' + meta.totalEpisodes : ''}</span>
+            <span class="chip">${sh.seenKeys.size} épisode(s) vu(s)${meta && meta.totalEpisodes ? ' / ' + airedTotal(meta) : ''}${meta && meta.totalEpisodes > airedTotal(meta) ? ` · ${meta.totalEpisodes - airedTotal(meta)} à venir` : ''}</span>
             ${isRewatching(sh) ? `<span class="chip">🔁 Revisionnage${(function(){ const p = rewatchPass(sh); return p ? ` ${p.done}/${p.total}` : ''; })()}</span>` : ''}
             ${starsHtml('showrate', sh.showRating || 0)}
           </div>
@@ -2272,6 +2306,30 @@ route('show', async (el, rest) => {
 });
 
 //////////////////////// Episode detail ////////////////////////
+// Previous / next episode of the episode page (specials stay among specials).
+let epNeighbors = { key: null, prev: null, next: null };
+async function episodeNeighbors(tmdbId, season, n) {
+  const out = { prev: null, next: null };
+  if (!tmdbId) return out;
+  let meta = null; try { meta = await getShowMeta(tmdbId); } catch {}
+  const seasons = season === 0 ? [0] : ((meta && meta.seasons) || []).map(s => s.n).filter(x => x > 0).sort((a, b) => a - b);
+  const epsOf = async (s) => { try { return (await getSeasonEpisodes(tmdbId, s)).map(e => e.n).sort((a, b) => a - b); } catch { return []; } };
+  const cur = await epsOf(season);
+  const i = cur.indexOf(n);
+  if (i > 0) out.prev = { s: season, n: cur[i - 1] };
+  if (i >= 0 && i < cur.length - 1) out.next = { s: season, n: cur[i + 1] };
+  const si = seasons.indexOf(season);
+  if (!out.prev && si > 0) { const p = await epsOf(seasons[si - 1]); if (p.length) out.prev = { s: seasons[si - 1], n: p[p.length - 1] }; }
+  if (!out.next && si >= 0 && si < seasons.length - 1) { const q = await epsOf(seasons[si + 1]); if (q.length) out.next = { s: seasons[si + 1], n: q[0] }; }
+  return out;
+}
+function goToNeighborEpisode(which) {
+  const ep = epNeighbors[which];
+  if (!ep || !epNeighbors.key) return;
+  _pendingSlideDir = which === 'next' ? 1 : -1;
+  _navReplace = true;
+  location.replace('#/episode/' + encodeURIComponent(epNeighbors.key) + '/' + ep.s + '/' + ep.n);
+}
 route('episode', async (el, rest) => {
   buildModel();
   const showKey = decodeURIComponent(rest[0] || '');
@@ -2306,11 +2364,19 @@ route('episode', async (el, rest) => {
     : '';
 
   const stillImg = ep && ep.still ? `<img src="${IMG(ep.still, 'w780')}" alt="">` : `<div class="ep-still-ph">${season}×${String(n).padStart(2, '0')}</div>`;
+  epNeighbors = { key: sh.key, ...(await episodeNeighbors(tmdbId, season, n)) };
+  const epLabel = (e) => `${e.s}×${String(e.n).padStart(2, '0')}`;
   el.innerHTML = `
     ${backBtn('#/show/' + encodeURIComponent(sh.key))}
     <div class="ep-page">
       <h1 class="ep-title">${esc(title)}</h1>
-      <div class="ep-num">Saison ${season} · Épisode ${n}</div>
+      <div class="ep-num-row">
+        <div class="ep-num">Saison ${season} · Épisode ${n}</div>
+        <div class="ep-nav">
+          ${epNeighbors.prev ? `<button class="btn sm ghost" data-epnav="prev" title="Épisode précédent">‹ ${epLabel(epNeighbors.prev)}</button>` : ''}
+          ${epNeighbors.next ? `<button class="btn sm ghost" data-epnav="next" title="Épisode suivant">${epLabel(epNeighbors.next)} ›</button>` : ''}
+        </div>
+      </div>
       <div class="ep-visual">${stillImg}</div>
       <p class="synopsis-text ep-synopsis">${esc(overviewTxt)}</p>
       <div class="detail-actions">
@@ -2327,6 +2393,7 @@ route('episode', async (el, rest) => {
     ${rows ? `<div class="about" style="margin-top:16px">${infoBlock(rows)}</div>` : ''}
     ${guestsHtml}`;
 
+  el.querySelectorAll('[data-epnav]').forEach(b => b.onclick = () => goToNeighborEpisode(b.dataset.epnav));
   el.querySelector('#epSeen').onclick = () => {
     const wasComplete = isShowComplete(sh);
     toggleSeen(sh, season, n);
@@ -2567,7 +2634,7 @@ function epHtml(sh, season, e, pass) {
 // ---- Fin de série : célébration + confettis ----
 function isShowComplete(sh) {
   const m = metaFor(sh);
-  return !!(m && m.totalEpisodes > 0 && sh.seenKeys.size >= m.totalEpisodes);
+  return !!(m && airedTotal(m) > 0 && sh.seenKeys.size >= airedTotal(m));
 }
 function fmtDur(mins) {
   const d = Math.floor(mins / 1440), h = Math.floor((mins % 1440) / 60), mm = Math.round(mins % 60);
@@ -3394,6 +3461,8 @@ route('settings', async (el) => {
         <button class="btn" id="exportBtn">Exporter mes données</button>
         <label class="btn" style="cursor:pointer">Importer<input type="file" id="importFile" accept="application/json" hidden></label>
       </div>
+      ${serverAvailable ? '' : `<p class="hint" style="color:var(--muted);margin-top:10px">Dernière sauvegarde : <b>${userState.lastBackupAt ? esc(fmtAgo(userState.lastBackupAt)) : 'jamais'}</b></p>
+      <label class="check-row"><input type="checkbox" id="weeklyBackup" ${userState.weeklyBackup !== false ? 'checked' : ''}> Me proposer une sauvegarde chaque semaine</label>`}
     </div>
 
     <div class="panel">
@@ -3420,7 +3489,9 @@ route('settings', async (el) => {
     catch { st.textContent = '❌ Clé invalide'; }
   };
   el.querySelector('#syncAll').onclick = () => syncEverything(el.querySelector('#syncProg'));
-  el.querySelector('#exportBtn').onclick = exportData;
+  el.querySelector('#exportBtn').onclick = () => { exportData(); render(); };
+  const wb = el.querySelector('#weeklyBackup');
+  if (wb) wb.onchange = (e) => { userState.weeklyBackup = e.target.checked; scheduleSaveState(); };
   el.querySelector('#shareBtn').onclick = exportSharedList;
   el.querySelector('#importFile').onchange = importData;
 });
@@ -3467,19 +3538,40 @@ async function syncAllMovies(progEl) {
   scheduleSaveCache();
 }
 
-function exportData() {
+function exportData(fileName) {
   // Full backup: catalogue complet (historique) + éditions utilisateur.
+  userState.lastBackupAt = new Date().toISOString();
+  scheduleSaveState();
   const backup = {
     format: 'tvtime-full',
     version: APP_VERSION,
-    exportedAt: new Date().toISOString(),
+    exportedAt: userState.lastBackupAt,
     data: DATA,
     userState: userState,
   };
   const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = 'tvtime-sauvegarde-' + new Date().toISOString().slice(0, 10) + '.json';
+  a.href = URL.createObjectURL(blob);
+  a.download = typeof fileName === 'string' ? fileName : 'tvtime-sauvegarde-' + new Date().toISOString().slice(0, 10) + '.json';
   a.click();
+}
+const BACKUP_EVERY_DAYS = 7;
+// Sur téléphone, les données vivent dans le navigateur (effacées si on vide les données de Chrome) :
+// une fois par semaine, on propose d'enregistrer une sauvegarde dans un fichier (Toujours le même nom).
+function maybeWeeklyBackup() {
+  if (serverAvailable || userState.weeklyBackup === false) return;
+  if (!(DATA.seen || []).length && !Object.keys(userState.seenAdd || {}).length) return;
+  if (Date.now() < (userState.backupSnoozeUntil || 0)) return;
+  if (daysSince(userState.lastBackupAt) < BACKUP_EVERY_DAYS) return;
+  if (document.querySelector('.backup-banner')) return;
+  const last = userState.lastBackupAt ? `Dernière : ${fmtAgo(userState.lastBackupAt)}.` : 'Aucune sauvegarde pour l\'instant.';
+  const bar = document.createElement('div');
+  bar.className = 'backup-banner';
+  bar.innerHTML = `<div class="bb-text"><b>🛟 Sauvegarde de la semaine</b><span>${esc(last)} Protège votre historique si les données du navigateur sont effacées.</span></div>
+    <div class="bb-actions"><button class="btn sm ghost" data-bb="later">Plus tard</button><button class="btn sm primary" data-bb="save">Enregistrer</button></div>`;
+  bar.querySelector('[data-bb="save"]').onclick = () => { exportData('tvtime-sauvegarde-hebdo.json'); bar.remove(); toast('Sauvegarde enregistrée dans Téléchargements'); };
+  bar.querySelector('[data-bb="later"]').onclick = () => { userState.backupSnoozeUntil = Date.now() + MS_DAY; scheduleSaveState(); bar.remove(); };
+  document.body.appendChild(bar);
 }
 const _normName = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 // Export just the LIST of series & movies (no watch history at all), to share
@@ -3697,6 +3789,8 @@ function applyTheme() {
   if (!location.hash) location.hash = '#/home';
   render();
   maybeShowChangelogPopup();
+  maybeWeeklyBackup();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') maybeWeeklyBackup(); });
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
