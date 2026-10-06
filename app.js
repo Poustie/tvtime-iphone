@@ -11,6 +11,16 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 29, date: '6 octobre 2026', title: 'Chances d\'aimer (premier essai)', items: [
+    'Sur une série ou un film que vous n\'avez pas vu (aperçu, série pas commencée, film à voir), un encadré estime vos chances de l\'aimer (ex. « 💚 82 % »), d\'après les œuvres proches que vous avez vues, vos genres préférés et la note du public.',
+  ] },
+  { id: 28, date: '6 octobre 2026', title: 'Explorer enrichi', items: [
+    'Nouvelles lignes dans Explorer : 💡 séries et films « pour vous » (d\'après vos favoris et vos meilleures notes), 🍿 au cinéma en ce moment, 📅 bientôt au cinéma (avec la date de sortie), 🏆 les plus vus de tous les temps et ⭐ les mieux notés.',
+  ] },
+  { id: 27, date: '6 octobre 2026', title: 'Explorer : tendances', items: [
+    'Explorer affiche maintenant les séries et les films du moment (tendances de la semaine). Faites défiler chaque ligne sur le côté ; ＋ pour ajouter, ✓ si vous l\'avez déjà.',
+    'Le clavier ne s\'ouvre plus tout seul en arrivant dans Explorer : touchez la barre de recherche quand vous voulez chercher.',
+  ] },
   { id: 26, date: '1er octobre 2026', title: 'Correction du défilement', items: [
     'La page Séries ne remonte plus toute seule quand on fait défiler : la mise à jour des séries en cours se fait en arrière-plan, une seule fois, sans bouger la page.',
   ] },
@@ -1788,6 +1798,7 @@ route('movie', async (el, rest) => {
             ${st === 'watched' && rw > 0 ? `<span class="chip">🔁 ${rw + 1} visionnages</span>` : ''}
             ${movieRatingOf(m) ? `<span class="chip">${'★'.repeat(movieRatingOf(m))}</span>` : ''}
           </div>
+          ${st !== 'watched' && meta && meta.id ? '<div class="appr-slot" id="apprSlot"></div>' : ''}
           <div class="detail-actions">
             <button class="btn ${st === 'watched' ? 'primary' : ''}" id="mToggle">${st === 'watched' ? '↩ Remettre « à voir »' : '✓ Marquer comme vu'}</button>
             ${st === 'watched' ? `<button class="btn" id="mRw">🔁 +1 visionnage${rw > 0 ? ' (×' + (rw + 1) + ')' : ''}</button>` : ''}
@@ -1835,6 +1846,7 @@ route('movie', async (el, rest) => {
     ev.currentTarget.querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.e === cur));
   });
   wireTrailer(el);
+  renderAppreciation(el.querySelector('#apprSlot'), 'movie', meta && meta.id, meta);
   el.querySelector('#mToggle').onclick = () => { setMovieStatus(m.name, st === 'watched' ? 'towatch' : 'watched'); toast(st === 'watched' ? 'Remis dans « à voir »' : 'Marqué comme vu'); render(); };
   el.querySelector('#mFav').onclick = () => { toggleFavMovie(m); toast(isFavMovie(m) ? 'Ajouté aux favoris' : 'Retiré des favoris'); render(); };
   el.querySelector('#mAddList').onclick = () => openAddToListModal('movie', m);
@@ -2180,7 +2192,7 @@ document.addEventListener('touchstart', (e) => {
   _swOn = false;
   if (e.touches.length !== 1) return;
   const t = e.target;
-  if (t.closest && t.closest('.cast-list, .sort-chips, .pv-seasons, .react, input, textarea, select')) return;
+  if (t.closest && t.closest('.cast-list, .exp-row, .sort-chips, .pv-seasons, .react, input, textarea, select')) return;
   if (document.getElementById('modalRoot') && document.getElementById('modalRoot').children.length) return;
   const r = currentRoute().split('/')[0];
   if (!SWIPE_ROUTES.includes(r) && r !== 'episode') return;
@@ -2259,6 +2271,7 @@ route('show', async (el, rest) => {
             ${isRewatching(sh) ? `<span class="chip">🔁 Revisionnage${(function(){ const p = rewatchPass(sh); return p ? ` ${p.done}/${p.total}` : ''; })()}</span>` : ''}
             ${starsHtml('showrate', sh.showRating || 0)}
           </div>
+          ${sh.seenKeys.size === 0 && tmdbId ? '<div class="appr-slot" id="apprSlot"></div>' : ''}
           <div class="overview">${esc(meta ? meta.overview : '')}</div>
           <div class="detail-actions">
             <button class="btn ${userState.watchlist[sh.key] ? 'primary' : ''}" id="btnWatch">${userState.watchlist[sh.key] ? '✓ Dans « à voir »' : '+ À voir plus tard'}</button>
@@ -2312,6 +2325,7 @@ route('show', async (el, rest) => {
   const bsr = el.querySelector('#btnStopRewatch');
   if (bsr) bsr.onclick = () => { if (userState.rewatching) delete userState.rewatching[sh.key]; scheduleSaveState(); toast('Revisionnage arrêté'); render(); };
 
+  renderAppreciation(el.querySelector('#apprSlot'), 'tv', tmdbId, meta);
   if (meta) await renderSeasons(el.querySelector('#seasons'), sh, tmdbId, meta, fresh);
 });
 
@@ -2901,58 +2915,282 @@ async function renderUpnext(el) {
 }
 
 //////////////////////// Explorer (rechercher de nouvelles œuvres) ////////////////////////
+// Cards of TMDB hits (search results / trends): ✓ if already in the library, ＋ to add, tap = open.
+function expHitsHtml(hits, ownedKey) {
+  return hits.map((h, i) => {
+    const name = h.name || h.title || '';
+    const date = (h.first_air_date || h.release_date || '').slice(0, 4);
+    const badge = h.media_type === 'tv' ? '📺 Série' : '🎬 Film';
+    const im = h.poster_path ? `<img loading="lazy" src="${IMG(h.poster_path, 'w185')}" alt="">` : `<div class="fallback-title">${esc(name)}</div>`;
+    const owned = !!ownedKey(h);
+    return `<div class="exp-hit${owned ? ' owned' : ''}" data-open="${i}">
+      <div class="ps-poster">${im}<span class="badge-tag">${badge}</span>
+        ${owned ? `<span class="owned-badge">✓ Dans ma liste</span>` : `<button class="exp-add" data-add="${i}" title="Ajouter à mes suivies">＋</button>`}</div>
+      <div class="ps-name">${esc(name)}${h.sub ? ` <span>· ${esc(h.sub)}</span>` : (date ? ` <span>(${date})</span>` : '')}</div>
+    </div>`;
+  }).join('');
+}
+function wireExpHits(container, hits, ownedKey) {
+  container.querySelectorAll('.exp-add').forEach(b => b.onclick = (ev) => {
+    ev.stopPropagation();
+    const h = hits[parseInt(b.getAttribute('data-add'), 10)];
+    if (h.media_type === 'tv') addCustomShow(h); else addCustomMovie(h);
+    b.textContent = '✓';
+  });
+  container.querySelectorAll('.exp-hit').forEach(card => card.onclick = () => {
+    const h = hits[parseInt(card.getAttribute('data-open'), 10)];
+    const key = ownedKey(h);
+    // Already in the library -> open the real tracked page, not a preview.
+    if (key && h.media_type === 'tv') { openShow(key); return; }
+    if (key && h.media_type === 'movie') { openMovie(key); return; }
+    navTo('#/preview/' + (h.media_type === 'tv' ? 'tv' : 'movie') + '/' + h.id);
+  });
+}
+const slimHit = (h, type) => ({ media_type: type, id: h.id, name: h.name, title: h.title, poster_path: h.poster_path, first_air_date: h.first_air_date, release_date: h.release_date });
+const slimHits = (r, type) => (r.results || []).filter(h => h.poster_path).slice(0, 20).map(h => slimHit(h, type));
+// Seeds for « pour vous »: favourites / well-rated works, most recently watched first.
+function recoSeeds(kind) {
+  if (kind === 'tv') {
+    buildModel();
+    const shows = [...MODEL.shows.values()].filter(s => s.seenKeys.size > 0);
+    const loved = shows.filter(s => isFavShow(s) || (s.showRating || 0) >= 4);
+    const pool = (loved.length >= 3 ? loved : shows).sort((a, b) => (b.lastSeenAt || '').localeCompare(a.lastSeenAt || ''));
+    return pool.map(s => ({ id: s.forcedTmdb || (s.tvdbId != null ? tmdbCache.map[s.tvdbId] : null), name: displayName(s) })).filter(x => x.id).slice(0, 5);
+  }
+  const movies = (DATA.movies || []).concat(userState.customMovies || []).filter(m => movieStatus(m) === 'watched');
+  const loved = movies.filter(m => isFavMovie(m) || movieRatingOf(m) >= 4);
+  const pool = (loved.length >= 3 ? loved : movies).sort((a, b) => String(movieWatchedOf(b) || '').localeCompare(String(movieWatchedOf(a) || '')));
+  const idOf = (m) => { const r = (userState.movieTmdb && userState.movieTmdb[m.name]) || (tmdbCache.movies && tmdbCache.movies[m.name]); return r && r.id; };
+  return pool.map(m => ({ id: idOf(m), name: m.name })).filter(x => x.id).slice(0, 5);
+}
+async function recoHits(kind) {
+  const seeds = recoSeeds(kind);
+  if (!seeds.length) return [];
+  const score = new Map();
+  const lists = await Promise.all(seeds.map(s => tmdbFetch(`/${kind}/${s.id}/recommendations`).catch(() => ({ results: [] }))));
+  lists.forEach(r => (r.results || []).forEach((h, i) => {
+    if (!h.poster_path || (h.vote_count || 0) < 300) return;
+    const cur = score.get(h.id) || { h, pts: 0 };
+    cur.pts += 20 - Math.min(i, 19);
+    score.set(h.id, cur);
+  }));
+  const own = ownedLookup();
+  return [...score.values()].sort((a, b) => b.pts - a.pts).map(x => slimHit(x.h, kind)).filter(h => !own(h)).slice(0, 20);
+}
+//////////////////////// Indice d'appréciation ////////////////////////
+// How much the user liked a work they've seen: { v: 0..1, w: strength of the evidence 0..1 }.
+const STAR_LIKE = [null, 0, 0.2, 0.5, 0.85, 1];
+const EMO_LIKE = { '1': 1, '3': 0.9, '8': 0.8, '2': 0.75, '5': 0.7, '4': 0.65, '6': 0.3, '7': 0 };
+function blendLiking(parts) {
+  const w = parts.reduce((a, p) => a + p.w, 0);
+  return w ? { v: parts.reduce((a, p) => a + p.v * p.w, 0) / w, w: Math.min(1, w) } : null;
+}
+function showLiking(sh) {
+  if (!sh.seenKeys.size) return null;
+  if (isFavShow(sh)) return { v: 1, w: 1 };
+  if (sh.showRating) return { v: STAR_LIKE[sh.showRating], w: 1 };
+  const parts = [];
+  let sum = 0, n = 0, rewatched = false;
+  for (const k of sh.seenKeys) {
+    const r = MODEL.ratingMap.get(k); if (r) { sum += STAR_LIKE[r]; n++; }
+    const e = MODEL.emotionMap.get(k); if (e in EMO_LIKE) { sum += EMO_LIKE[e]; n++; }
+    if (MODEL.rewatchMap.get(k) > 0) rewatched = true;
+  }
+  if (n >= 3) parts.push({ v: sum / n, w: Math.min(0.8, n / 12) });
+  if (rewatched) parts.push({ v: 0.95, w: 0.8 });
+  const aired = airedTotal(metaFor(sh));
+  const prog = aired ? Math.min(1, sh.seenKeys.size / aired) : null;
+  if (prog != null) {
+    const idle = daysSince(sh.lastSeenAt);
+    if (prog >= 0.9) parts.push({ v: 0.8, w: 0.6 });
+    else if (sh.archived) parts.push({ v: prog < 0.5 ? 0.1 : 0.35, w: 0.8 });
+    // Not watched for a year: dropped after the first episodes = not liked; left mid-way = unknown (maybe paused).
+    else if (idle > 365) parts.push(sh.seenKeys.size <= 3 ? { v: 0.2, w: 0.7 } : { v: 0.55, w: 0.15 });
+    else parts.push({ v: 0.65, w: 0.25 });
+  }
+  return blendLiking(parts);
+}
+function movieLiking(m) {
+  if (movieStatus(m) !== 'watched') return null;
+  if (isFavMovie(m)) return { v: 1, w: 1 };
+  if (movieRatingOf(m)) return { v: STAR_LIKE[movieRatingOf(m)], w: 1 };
+  const parts = [];
+  const e = movieEmotionOf(m); if (e in EMO_LIKE) parts.push({ v: EMO_LIKE[e], w: 0.8 });
+  if (movieRewatchOf(m) > 0) parts.push({ v: 0.9, w: 0.7 });
+  if (!parts.length) parts.push({ v: 0.6, w: 0.2 }); // watched to the end, no opinion given
+  return blendLiking(parts);
+}
+// Library indexed by TMDB id, per kind: id -> { v, w, name, genres }.
+function likingIndex() {
+  buildModel();
+  const idx = { tv: new Map(), movie: new Map() };
+  for (const sh of MODEL.shows.values()) {
+    const L = showLiking(sh); if (!L) continue;
+    const id = sh.forcedTmdb || (sh.tvdbId != null ? tmdbCache.map[sh.tvdbId] : null); if (!id) continue;
+    const m = metaFor(sh);
+    idx.tv.set(Number(id), { ...L, name: displayName(sh), genres: (m && m.genres) || [] });
+  }
+  for (const mv of (DATA.movies || []).concat(userState.customMovies || [])) {
+    const L = movieLiking(mv); if (!L) continue;
+    const r = (userState.movieTmdb && userState.movieTmdb[mv.name]) || (tmdbCache.movies && tmdbCache.movies[mv.name]);
+    if (!r || !r.id) continue;
+    const mm = tmdbCache.movieMeta && tmdbCache.movieMeta[r.id];
+    idx.movie.set(Number(r.id), { ...L, name: (r.title || mv.name), genres: (mm && mm.genres) || [] });
+  }
+  return idx;
+}
+// Works close to a given one (TMDB recommendations, completed by « similar »), cached 30 days.
+async function getNeighbors(kind, id) {
+  if (!tmdbCache.neighbors) tmdbCache.neighbors = {};
+  const ck = kind + id;
+  const c = tmdbCache.neighbors[ck];
+  if (c && Date.now() - c.at < 30 * MS_DAY) return c.list;
+  const pick = (r) => (r.results || []).map(h => [h.id, h.name || h.title || '']);
+  let list = pick(await tmdbFetch(`/${kind}/${id}/recommendations`));
+  if (list.length < 10) {
+    const seen = new Set(list.map(x => x[0]));
+    try { list = list.concat(pick(await tmdbFetch(`/${kind}/${id}/similar`)).filter(x => !seen.has(x[0]))); } catch {}
+  }
+  list = list.slice(0, 30);
+  tmdbCache.neighbors[ck] = { at: Date.now(), list };
+  scheduleSaveCache();
+  return list;
+}
+// Model tuned on the user's own series history (leave-one-out test, 307 series: AUC 0.70;
+// calibration: ~90 % announced -> 92 % actually liked, < 60 % -> 48 %).
+const LIKE_MODEL = {
+  a: 1.489, b: 0.226,
+  w: { pub: 2, genre: 1, top10: 2 },
+  st: { pub: [0.7905, 0.1830], genre: [0.7324, 0.0172], top10: [0.2228, 0.1855] },
+};
+// Estimated chance (0..1) that the user likes a work. `exclude` = id ignored (testing on the history).
+async function predictLiking(kind, id, genres, vote, idx, exclude) {
+  idx = idx || likingIndex();
+  const lib = idx[kind];
+  let gSum = 0, gW = 0;
+  for (const [lid, L] of lib) if (lid !== exclude) { gSum += L.v * L.w; gW += L.w; }
+  const globalMean = gW ? gSum / gW : 0.6;
+  // 1. similar works: how many of the closest ones you've watched, and liked
+  let top10 = 0, seenN = 0; const liked = [], disliked = [];
+  const neigh = await getNeighbors(kind, id);
+  neigh.forEach(([nid], i) => {
+    if (nid === exclude) return;
+    const L = lib.get(nid); if (!L) return;
+    seenN++; if (i < 10) top10++;
+    if (L.v >= 0.7) liked.push(L.name); else if (L.v <= 0.35) disliked.push(L.name);
+  });
+  // 2. genre affinity (shrunk toward the user's average when a genre has little data)
+  const gStats = {};
+  for (const [lid, L] of lib) {
+    if (lid === exclude) continue;
+    for (const g of L.genres) { const s = gStats[g] || (gStats[g] = { s: 0, w: 0 }); s.s += L.v * L.w; s.w += L.w; }
+  }
+  const gAff = (genres || []).filter(g => gStats[g]).map(g => (gStats[g].s + 2 * globalMean) / (gStats[g].w + 2));
+  const genre = gAff.length ? gAff.reduce((a, b) => a + b, 0) / gAff.length : globalMean;
+  // 3. public opinion
+  const pub = vote ? Math.max(0, Math.min(1, (vote - 5) / 3.5)) : 0.5;
+  const f = { pub, genre, top10: top10 / 10 };
+  const M = LIKE_MODEL;
+  const s = Object.keys(M.w).reduce((t, k) => t + M.w[k] * (f[k] - M.st[k][0]) / M.st[k][1], 0);
+  const v = 1 / (1 + Math.exp(-(M.a + M.b * s)));
+  const evidence = (top10 >= 3 ? 1 : 0) + (vote ? 1 : 0) + (gAff.length ? 1 : 0);
+  return { v, pct: Math.max(5, Math.min(95, Math.round(v * 100))), conf: evidence >= 3 ? 'élevée' : (evidence === 2 || seenN >= 2) ? 'moyenne' : 'faible',
+    liked: liked.slice(0, 3), disliked: disliked.slice(0, 2) };
+}
+function appreciationHtml(p) {
+  const cls = p.pct >= 75 ? 'hi' : p.pct >= 55 ? 'mid' : 'lo';
+  const icon = cls === 'hi' ? '💚' : cls === 'mid' ? '🟡' : '🔻';
+  const why = [];
+  if (p.liked.length) why.push(`Proche de ${p.liked.map(esc).join(', ')} que vous avez aimé${p.liked.length > 1 ? 's' : ''}.`);
+  if (p.disliked.length) why.push(`Mais aussi de ${p.disliked.map(esc).join(', ')} que vous avez abandonné${p.disliked.length > 1 ? 's' : ''}.`);
+  return `<div class="appr appr-${cls}">
+    <div class="appr-main">${icon} <b>${p.pct} %</b> de chances que vous aimiez <span class="appr-conf" title="Estimation d'après vos goûts : œuvres proches que vous avez vues, vos genres et la note du public.">· estimation</span></div>
+    ${why.length ? `<div class="appr-why">${why.join(' ')}</div>` : ''}
+  </div>`;
+}
+// Fill a placeholder with the appreciation score of an unseen work (quietly does nothing on error).
+async function renderAppreciation(slot, kind, id, meta) {
+  if (!slot || !hasKey() || !id) return;
+  try {
+    const p = await predictLiking(kind, Number(id), meta && meta.genres, meta && meta.vote);
+    if (document.body.contains(slot)) slot.innerHTML = appreciationHtml(p);
+  } catch {}
+}
+
+// Explorer rows shown when the search box is empty (each cached with its own TTL).
+const EXPLORE_ROWS = [
+  { id: 'trTv', title: '🔥 Séries du moment', ttl: 0.5, load: async () => slimHits(await tmdbFetch('/trending/tv/week'), 'tv') },
+  { id: 'trMovie', title: '🎬 Films du moment', ttl: 0.5, load: async () => slimHits(await tmdbFetch('/trending/movie/week'), 'movie') },
+  { id: 'recoTv', title: '💡 Séries pour vous', ttl: 1, key: () => recoSeeds('tv').map(s => s.id).join(','), load: () => recoHits('tv') },
+  { id: 'recoMovie', title: '💡 Films pour vous', ttl: 1, key: () => recoSeeds('movie').map(s => s.id).join(','), load: () => recoHits('movie') },
+  { id: 'cinema', title: '🍿 Au cinéma en ce moment', ttl: 0.5, load: async () => slimHits(await tmdbFetch('/movie/now_playing?region=FR'), 'movie') },
+  { id: 'soon', title: '📅 Bientôt au cinéma', ttl: 0.5, load: async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    return ((await tmdbFetch('/movie/upcoming?region=FR')).results || [])
+      .filter(h => h.poster_path && (h.release_date || '') > today)
+      .sort((a, b) => a.release_date.localeCompare(b.release_date)).slice(0, 20)
+      .map(h => ({ ...slimHit(h, 'movie'), sub: fmtFull(h.release_date) }));
+  } },
+  { id: 'allTv', title: '🏆 Séries les plus vues de tous les temps', ttl: 7, load: async () => slimHits(await tmdbFetch('/discover/tv?sort_by=vote_count.desc'), 'tv') },
+  { id: 'allMovie', title: '🏆 Films les plus vus de tous les temps', ttl: 7, load: async () => slimHits(await tmdbFetch('/discover/movie?sort_by=vote_count.desc'), 'movie') },
+  { id: 'topTv', title: '⭐ Séries les mieux notées', ttl: 7, load: async () => slimHits(await tmdbFetch('/discover/tv?sort_by=vote_average.desc&vote_count.gte=2000'), 'tv') },
+  { id: 'topMovie', title: '⭐ Films les mieux notés', ttl: 7, load: async () => slimHits(await tmdbFetch('/discover/movie?sort_by=vote_average.desc&vote_count.gte=5000'), 'movie') },
+];
+async function exploreRowHits(row) {
+  if (!tmdbCache.explore) tmdbCache.explore = {};
+  const key = row.key ? row.key() : '';
+  const c = tmdbCache.explore[row.id];
+  if (c && c.key === key && Date.now() - (c.at || 0) < row.ttl * MS_DAY) return c.hits;
+  const hits = await row.load();
+  tmdbCache.explore[row.id] = { at: Date.now(), key, hits };
+  scheduleSaveCache();
+  return hits;
+}
 route('explore', async (el) => {
   el.innerHTML = `
     <div class="page-head"><h1>🧭 Explorer</h1><span class="sub">Rechercher de nouvelles séries et films à ajouter</span></div>
     ${hasKey() ? `<div class="explore-search"><input class="input" id="expQ" placeholder="Rechercher une série ou un film…" autocomplete="off"></div>
-    <div id="expResults" class="explore-results"><p class="home-empty">Tapez un titre ci-dessus pour trouver des séries et des films.</p></div>`
+    <div id="expResults" class="explore-results"></div>`
       : needKeyHtml("L'exploration a besoin d'une clé TMDB pour rechercher des séries et des films.")}`;
   if (!hasKey()) return;
   const ownedKey = ownedLookup();
   const input = el.querySelector('#expQ');
   const results = el.querySelector('#expResults');
   input.value = exploreQuery;
+  let rowsTok = 0;
+  const showTrending = async () => {
+    const tok = ++rowsTok;
+    results.innerHTML = EXPLORE_ROWS.map(r => `<div class="exp-section" data-row="${r.id}"><h2>${r.title}</h2><div class="exp-row" id="${r.id}"><div class="loading">Chargement…</div></div></div>`).join('');
+    await Promise.all(EXPLORE_ROWS.map(async (r) => {
+      let hits = [];
+      try { hits = await exploreRowHits(r); } catch {}
+      if (tok !== rowsTok || input.value.trim().length >= 2) return;
+      const sec = results.querySelector(`[data-row="${r.id}"]`);
+      if (!sec) return;
+      if (!hits.length) { sec.remove(); return; }
+      const row = sec.querySelector('.exp-row');
+      row.innerHTML = expHitsHtml(hits, ownedKey);
+      wireExpHits(row, hits, ownedKey);
+    }));
+  };
   let seq = 0, deb = null;
   const doSearch = async () => {
     const term = input.value.trim();
-    if (term.length < 2) { results.innerHTML = `<p class="home-empty">Tapez un titre ci-dessus pour trouver des séries et des films.</p>`; return; }
+    if (term.length < 2) { seq++; await showTrending(); return; }
     const my = ++seq;
+    rowsTok++;
     results.innerHTML = `<div class="loading">Recherche…</div>`;
     try {
       const res = await tmdbFetch(`/search/multi?query=${encodeURIComponent(term)}`);
       if (my !== seq) return;
       const hits = (res.results || []).filter(h => h.media_type === 'tv' || h.media_type === 'movie').slice(0, 24);
       if (!hits.length) { results.innerHTML = `<div class="empty">Aucun résultat.</div>`; return; }
-      results.innerHTML = `<div class="ps-grid">` + hits.map((h, i) => {
-        const name = h.name || h.title || '';
-        const date = (h.first_air_date || h.release_date || '').slice(0, 4);
-        const badge = h.media_type === 'tv' ? '📺 Série' : '🎬 Film';
-        const im = h.poster_path ? `<img loading="lazy" src="${IMG(h.poster_path, 'w185')}" alt="">` : `<div class="fallback-title">${esc(name)}</div>`;
-        const owned = !!ownedKey(h);
-        return `<div class="exp-hit${owned ? ' owned' : ''}" data-open="${i}">
-          <div class="ps-poster">${im}<span class="badge-tag">${badge}</span>
-            ${owned ? `<span class="owned-badge">✓ Dans ma liste</span>` : `<button class="exp-add" data-add="${i}" title="Ajouter à mes suivies">＋</button>`}</div>
-          <div class="ps-name">${esc(name)}${date ? ` <span>(${date})</span>` : ''}</div>
-        </div>`;
-      }).join('') + `</div>`;
-      const addHit = (h) => { if (h.media_type === 'tv') addCustomShow(h); else addCustomMovie(h); };
-      results.querySelectorAll('.exp-add').forEach(b => b.onclick = (ev) => {
-        ev.stopPropagation();
-        addHit(hits[parseInt(b.getAttribute('data-add'), 10)]);
-        b.textContent = '✓';
-      });
-      results.querySelectorAll('.exp-hit').forEach(card => card.onclick = () => {
-        const h = hits[parseInt(card.getAttribute('data-open'), 10)];
-        const key = ownedKey(h);
-        // Already in the library -> open the real tracked page, not a preview.
-        if (key && h.media_type === 'tv') { openShow(key); return; }
-        if (key && h.media_type === 'movie') { openMovie(key); return; }
-        navTo('#/preview/' + (h.media_type === 'tv' ? 'tv' : 'movie') + '/' + h.id);
-      });
+      results.innerHTML = `<div class="ps-grid">${expHitsHtml(hits, ownedKey)}</div>`;
+      wireExpHits(results, hits, ownedKey);
     } catch { if (my === seq) results.innerHTML = `<div class="empty">Erreur de recherche.</div>`; }
   };
   input.oninput = () => { exploreQuery = input.value; clearTimeout(deb); deb = setTimeout(doSearch, 320); };
-  if (exploreQuery.trim().length >= 2) doSearch(); else input.focus();
+  await doSearch();
 });
 
 // Read-only preview of a TMDB work (from Explorer) — does NOT add it to the library.
@@ -2975,6 +3213,7 @@ route('preview', async (el, rest) => {
             <div>
               <div class="sub">${esc((meta.firstAir || '').slice(0, 4))}${meta.status ? ' · ' + esc(statusFr(meta.status)) : ''} ${genres ? '· ' + esc(genres) : ''}</div>
               <div class="tags"><span class="chip">${meta.totalEpisodes || 0} épisode(s)</span>${meta.vote ? `<span class="chip">⭐ ${meta.vote.toFixed(1)}</span>` : ''}</div>
+              <div class="appr-slot" id="apprSlot"></div>
               <div class="overview">${esc(meta.overview || '')}</div>
               <div class="detail-actions"><button class="btn primary" id="pvAdd">➕ Ajouter à mes séries</button></div>
             </div>
@@ -2984,6 +3223,7 @@ route('preview', async (el, rest) => {
         ${castHtml(meta.cast)}
         ${trailerHtml(meta.trailer)}`;
       wireTrailer(pv);
+      renderAppreciation(pv.querySelector('#apprSlot'), 'tv', id, meta);
       pv.querySelector('#pvAdd').onclick = () => { addCustomShow({ id, name: meta.name, poster_path: meta.poster }); openShow('tmdb:' + id); };
     } else {
       const meta = await getMovieMeta(id);
@@ -2998,6 +3238,7 @@ route('preview', async (el, rest) => {
             <div>
               <div class="sub">${esc((meta.release || '').slice(0, 4))}${rt ? ' · ' + Math.floor(rt / 60) + 'h' + String(rt % 60).padStart(2, '0') : ''} ${genres ? '· ' + esc(genres) : ''}${meta.vote ? ' · ⭐ ' + meta.vote.toFixed(1) : ''}</div>
               ${meta.tagline ? `<div class="sub" style="font-style:italic;margin-top:4px">${esc(meta.tagline)}</div>` : ''}
+              <div class="appr-slot" id="apprSlot"></div>
               <div class="overview">${esc(meta.overview || '')}</div>
               <div class="detail-actions"><button class="btn primary" id="pvAdd">➕ Ajouter à mes films</button></div>
             </div>
@@ -3006,6 +3247,7 @@ route('preview', async (el, rest) => {
         ${castHtml(meta.cast)}
         ${trailerHtml(meta.trailer)}`;
       wireTrailer(pv);
+      renderAppreciation(pv.querySelector('#apprSlot'), 'movie', id, meta);
       pv.querySelector('#pvAdd').onclick = () => { addCustomMovie({ id, title: meta.title, release_date: meta.release, poster_path: meta.poster }); openMovie(meta.title); };
     }
   } catch { pv.innerHTML = `<div class="empty"><div class="big">⚠️</div>Impossible de charger l'aperçu.</div>`; }
