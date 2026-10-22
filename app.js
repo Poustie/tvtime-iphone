@@ -11,6 +11,14 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 31, date: '22 octobre 2026', title: 'Films en double & import plus sûr', items: [
+    'Les films que vous avez rajoutés à la main alors qu\'ils étaient déjà dans votre historique (ex. Hunger Games en français et en anglais) sont fusionnés automatiquement : vu, revisionnages, note, réaction et favori sont conservés.',
+    'Importer un fichier qui ne contient pas d\'historique (par exemple une liste partagée) n\'efface plus votre historique.',
+    'La recherche de films trouve maintenant aussi les titres français (ex. « Âge de glace » trouve Ice Age), et ajouter un film déjà dans votre bibliothèque ouvre sa fiche au lieu de créer un doublon.',
+  ] },
+  { id: 30, date: '6 octobre 2026', title: 'Glissement qui suit le doigt', items: [
+    'Entre les catégories (Séries, Films, Explorer, Profil) et entre les épisodes, la page suit maintenant votre doigt : on voit la page suivante arriver pendant le geste. Relâchez avant la moitié et la page revient ; un geste rapide suffit pour passer.',
+  ] },
   { id: 29, date: '6 octobre 2026', title: 'Chances d\'aimer (premier essai)', items: [
     'Sur une série ou un film que vous n\'avez pas vu (aperçu, série pas commencée, film à voir), un encadré estime vos chances de l\'aimer (ex. « 💚 82 % »), d\'après les œuvres proches que vous avez vues, vos genres préférés et la note du public.',
   ] },
@@ -243,7 +251,14 @@ async function apiGet(path) {
 }
 
 let saveTimer = null, cacheTimer = null;
+let _dataVer = 0;      // bumped on every data change: tells which pages prepared for swiping are stale
+let _prerendering = 0; // > 0 while a page is being prepared in the background
+let _sw = null, _swBusy = false; // swipe in progress / finishing animation
 function scheduleSaveState() {
+  if (!_prerendering) {
+    _dataVer++;
+    if (typeof schedulePanes === 'function' && !_sw && !_swBusy) schedulePanes(1500);
+  }
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     if (serverAvailable) {
@@ -1156,14 +1171,26 @@ async function render() {
   _lastTopRoute = newTop;
   if (_pendingSlideDir) { dir = _pendingSlideDir; _pendingSlideDir = 0; }
   const el = document.getElementById('app');
+  // Page already in place after a swipe: nothing to render (unless its data changed meanwhile).
+  if (_suppressRenderHash && _suppressRenderHash === location.hash) {
+    _suppressRenderHash = null;
+    if (el._ver === _dataVer) { schedulePanes(); return; }
+    dir = 0;
+  }
+  _suppressRenderHash = null;
+  dropPane(location.hash || '#/home'); // never keep a hidden copy of the page being rendered
+  for (const h in _panes) _panes[h].el.style.cssText = '';
   el.style.transition = ''; el.style.transform = ''; el.classList.remove('page-anim');
   const snapObj = dir !== 0 ? _makeSnapshot() : null;
   const fn = routes[name] || routes['library'];
+  const ver = _dataVer;
   el.innerHTML = '<div class="loading">Chargement…</div>';
   try { await fn(el, rest); } catch (e) { el.innerHTML = `<div class="empty"><div class="big">⚠️</div>${esc(e.message)}</div>`; }
+  el._ver = ver;
   const saved = scrollByHash[location.hash];
   window.scrollTo(0, name !== 'show' && name !== 'movie' && name !== 'episode' && saved ? saved : 0);
   if (snapObj) _runSlide(el, snapObj, dir);
+  schedulePanes();
 }
 window.addEventListener('hashchange', render);
 
@@ -1337,9 +1364,10 @@ function openAddCatalog(kind) {
     kind,
     initial: '',
     onPick: async (hit) => {
-      if (kind === 'tv') addCustomShow(hit); else addCustomMovie(hit);
       closeModal();
-      location.hash = kind === 'tv' ? '#/home' : '#/movies';
+      if (kind !== 'tv') { openMovie(addCustomMovie(hit)); return; }
+      addCustomShow(hit);
+      location.hash = '#/home';
       render();
     },
   });
@@ -1360,15 +1388,19 @@ function removeCustomShow(key) {
   const i = userState.customShows.findIndex(c => keyOf(c) === key);
   if (i >= 0) { userState.customShows.splice(i, 1); scheduleSaveState(); }
 }
+// Returns the name of the movie in the library (the existing one if it was already there).
 function addCustomMovie(hit) {
   if (!userState.customMovies) userState.customMovies = [];
   const name = hit.title || hit.name || '';
-  const exists = (DATA.movies || []).some(m => m.name === name) || userState.customMovies.some(m => m.name === name);
-  if (exists) { toast('Film déjà présent'); return; }
+  const all = (DATA.movies || []).concat(userState.customMovies);
+  const idOf = (n) => { const r = (userState.movieTmdb && userState.movieTmdb[n]) || (tmdbCache.movies && tmdbCache.movies[n]); return r && r.id; };
+  const same = all.find(m => (hit.id != null && idOf(m.name) === hit.id) || _normName(m.name) === _normName(name));
+  if (same) { toast(`Déjà dans votre bibliothèque : ${movieDisplayName(same)}`); return same.name; }
   userState.customMovies.push({ name, releaseDate: hit.release_date || '', runtime: null, status: 'towatch', custom: true, addedAt: new Date().toISOString() });
   setMovieTmdb(name, hit); // stores poster + id
   scheduleSaveState();
   toast('Film ajouté à « À voir »');
+  return name;
 }
 function removeCustomMovie(name) {
   if (!userState.customMovies) return;
@@ -1409,7 +1441,7 @@ function openUnifiedSearch(kind) {
 
     const localMatches = (t) => {
       if (kind === 'tv') return ownedShows.filter(s => searchNames(s).some(n => n.includes(t))).slice(0, 12);
-      return ownedMovies.filter(m => (m.name || '').toLowerCase().includes(t)).slice(0, 12);
+      return ownedMovies.filter(m => _normName((m.name || '') + ' ' + movieDisplayName(m)).includes(_normName(t))).slice(0, 12);
     };
 
     let hits = [];
@@ -1426,7 +1458,7 @@ function openUnifiedSearch(kind) {
             return hitCard(poster, displayName(it), '', `data-local-key="${esc(it.key)}"`);
           }
           const rec = (tmdbCache.movies || {})[it.name];
-          return hitCard(rec && rec.poster, it.name, movieYear(it), `data-local-movie="${esc(it.name)}"`);
+          return hitCard(rec && rec.poster, movieDisplayName(it), movieYear(it), `data-local-movie="${esc(it.name)}"`);
         }).join('') + `</div>`;
       }
       html += `<div class="ps-section">Ajouter une nouvelle œuvre</div>`;
@@ -1453,10 +1485,9 @@ function openUnifiedSearch(kind) {
         ).join('') + `</div>`;
         box.querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
           const h = hits[parseInt(b.getAttribute('data-add'), 10)];
-          if (kind === 'tv') addCustomShow(h); else addCustomMovie(h);
           closeModal();
-          location.hash = kind === 'tv' ? '#/home' : '#/movies';
-          render();
+          if (kind === 'tv') { addCustomShow(h); location.hash = '#/home'; render(); return; }
+          openMovie(addCustomMovie(h));
         });
       } catch { const box = results.querySelector('#uTmdb'); if (box) box.innerHTML = `<div class="empty">Erreur de recherche.</div>`; }
     };
@@ -2184,32 +2215,168 @@ document.addEventListener('click', (e) => {
   if (card && !(e.target.closest && e.target.closest('button'))) { e.stopPropagation(); e.preventDefault(); }
 }, true);
 
-// ---- Swipe left/right to move between the main categories (basic version:
-//      detected on release, the page change plays the standard slide). ----
+//////////////////////// Swipe : la page suit le doigt ////////////////////////
+// The pages on each side (neighbouring categories, or previous/next episode) are rendered
+// in the background into hidden .app-pane elements. While swiping, the current page and the
+// incoming pane move together; on release the pane BECOMES the page (no re-render).
 const SWIPE_ROUTES = ['home', 'movies', 'explore', 'profile'];
-let _swX = 0, _swY = 0, _swOn = false;
+const _panes = {};           // hash -> { el, y }
+let _paneTok = 0, _paneTimer = null;
+let _suppressRenderHash = null;
+const _W = () => window.innerWidth;
+function _setX(el, x, y, anim) {
+  el.style.transition = anim ? 'transform 240ms cubic-bezier(.2,.75,.3,1)' : 'none';
+  el.style.transform = `translate3d(${x}px, ${-(y || 0)}px, 0)`;
+}
+function swipeNeighbors() {
+  const name = currentRoute().split('/')[0];
+  if (SWIPE_ROUTES.includes(name)) {
+    const i = SWIPE_ROUTES.indexOf(name);
+    return { kind: 'tab', prev: i > 0 ? '#/' + SWIPE_ROUTES[i - 1] : null, next: i < SWIPE_ROUTES.length - 1 ? '#/' + SWIPE_ROUTES[i + 1] : null };
+  }
+  const nb = name === 'episode' && document.getElementById('app')?._epNb;
+  if (nb && nb.key) {
+    const h = (e) => e ? '#/episode/' + encodeURIComponent(nb.key) + '/' + e.s + '/' + e.n : null;
+    return { kind: 'episode', prev: h(nb.prev), next: h(nb.next) };
+  }
+  return null;
+}
+function dropPane(h) { const p = _panes[h]; if (p) { p.el.remove(); delete _panes[h]; } }
+// Prepare the neighbouring pages in the background (fresh ones are kept).
+function schedulePanes(delay = 400) {
+  clearTimeout(_paneTimer);
+  const tok = ++_paneTok;
+  const nb = swipeNeighbors();
+  const want = new Set(nb ? [nb.prev, nb.next].filter(Boolean) : []);
+  for (const h of Object.keys(_panes)) {
+    const keepTab = SWIPE_ROUTES.includes(h.slice(2)) && _panes[h].el._ver === _dataVer;
+    if (!want.has(h) && !keepTab) dropPane(h);
+  }
+  if (!want.size) return;
+  _paneTimer = setTimeout(async () => {
+    for (const h of want) {
+      if (tok !== _paneTok) return;
+      if (_sw || _swBusy) { schedulePanes(delay); return; }
+      if (_panes[h] && _panes[h].el._ver === _dataVer) continue;
+      await prerenderPane(h, tok);
+    }
+  }, delay);
+}
+async function prerenderPane(hash, tok) {
+  const [name, ...rest] = hash.slice(2).split('/');
+  const fn = routes[name]; if (!fn) return;
+  const el = document.createElement('main');
+  el.className = 'app-pane';
+  document.body.appendChild(el);
+  const ver = _dataVer;
+  _prerendering++;
+  try { await fn(el, rest); } catch { el.remove(); return; } finally { _prerendering--; }
+  if (tok !== _paneTok || hash === (location.hash || '#/home')) { el.remove(); return; }
+  el._ver = ver;
+  dropPane(hash);
+  _panes[hash] = { el, y: name === 'episode' ? 0 : (scrollByHash[hash] || 0) };
+}
+// The incoming pane becomes the page; the old page stays ready for swiping back.
+function _commitPane(hash, pane, kind) {
+  const old = document.getElementById('app');
+  const oldHash = location.hash || '#/home';
+  const oldY = window.scrollY;
+  scrollByHash[oldHash] = oldY;
+  delete _panes[hash];
+  old.removeAttribute('id');
+  const el = pane.el;
+  el.classList.remove('app-pane'); el.style.cssText = '';
+  old.parentNode.insertBefore(el, old);
+  el.id = 'app';
+  old.style.cssText = ''; old.classList.add('app-pane');
+  document.body.appendChild(old);
+  _panes[oldHash] = { el: old, y: oldY };
+  window.scrollTo(0, pane.y);
+  _suppressRenderHash = hash;
+  if (kind === 'episode') { _navReplace = true; location.replace(hash); } else location.hash = hash;
+}
+function _swFinish(s, commit) {
+  _swBusy = true;
+  const app = document.getElementById('app');
+  const sign = s.side === 'next' ? -1 : 1;
+  _setX(app, commit ? sign * _W() : 0, 0, true);
+  if (s.pane) _setX(s.pane.el, commit ? 0 : -sign * _W(), s.pane.y, true);
+  setTimeout(() => {
+    if (commit) _commitPane(s.target, s.pane, s.nb.kind);
+    else {
+      app.style.transition = ''; app.style.transform = '';
+      if (s.pane) s.pane.el.style.cssText = '';
+    }
+    _swBusy = false;
+  }, 260);
+}
+// Classic navigation (with the slide animation) when the page on that side isn't ready yet.
+function swipeFallback(side, nb) {
+  const target = nb[side]; if (!target) return;
+  _pendingSlideDir = side === 'next' ? 1 : -1;
+  if (nb.kind === 'episode') { _navReplace = true; location.replace(target); } else location.hash = target;
+}
+// Same transition as a swipe, started by a button (‹ › on episodes).
+function swipeTo(side) {
+  if (_swBusy) return;
+  const nb = swipeNeighbors(); if (!nb || !nb[side]) return;
+  const pane = _panes[nb[side]];
+  if (!pane) { swipeFallback(side, nb); return; }
+  pane.el.style.visibility = 'visible';
+  _setX(pane.el, side === 'next' ? _W() : -_W(), pane.y);
+  void pane.el.offsetWidth;
+  _swFinish({ nb, side, target: nb[side], pane }, true);
+}
+function _swDrag(s, dx) {
+  const side = dx < 0 ? 'next' : 'prev';
+  if (s.pane && s.side !== side) s.pane.el.style.cssText = ''; // finger went back past the start
+  const target = s.nb[side];
+  const pane = (target && _panes[target]) || null;
+  Object.assign(s, { side, target, pane, dx });
+  const app = document.getElementById('app');
+  if (!pane) { _setX(app, dx * 0.3); return; } // nothing ready on that side: elastic resistance
+  pane.el.style.visibility = 'visible';
+  _setX(app, dx);
+  _setX(pane.el, (side === 'next' ? _W() : -_W()) + dx, pane.y);
+}
 document.addEventListener('touchstart', (e) => {
-  _swOn = false;
-  if (e.touches.length !== 1) return;
+  _sw = null;
+  if (_swBusy || e.touches.length !== 1) return;
   const t = e.target;
   if (t.closest && t.closest('.cast-list, .exp-row, .sort-chips, .pv-seasons, .react, input, textarea, select')) return;
   if (document.getElementById('modalRoot') && document.getElementById('modalRoot').children.length) return;
-  const r = currentRoute().split('/')[0];
-  if (!SWIPE_ROUTES.includes(r) && r !== 'episode') return;
-  _swOn = true; _swX = e.touches[0].clientX; _swY = e.touches[0].clientY;
+  const nb = swipeNeighbors(); if (!nb) return;
+  const x = e.touches[0].clientX, y = e.touches[0].clientY;
+  _sw = { x0: x, y0: y, nb, locked: false, side: null, target: null, pane: null, dx: 0, lastX: x, lastT: performance.now(), vx: 0 };
 }, { passive: true });
-document.addEventListener('touchend', (e) => {
-  if (!_swOn) return;
-  _swOn = false;
-  const dx = e.changedTouches[0].clientX - _swX;
-  const dy = e.changedTouches[0].clientY - _swY;
-  if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 2) return; // require a clear horizontal swipe
-  if (currentRoute().split('/')[0] === 'episode') { goToNeighborEpisode(dx < 0 ? 'next' : 'prev'); return; }
-  let i = SWIPE_ROUTES.indexOf(currentRoute().split('/')[0]);
-  if (i < 0) return;
-  i += (dx < 0 ? 1 : -1); // swipe left = next category, swipe right = previous
-  if (i < 0 || i >= SWIPE_ROUTES.length) return; // no wrap-around at the ends
-  location.hash = '#/' + SWIPE_ROUTES[i];
+document.addEventListener('touchmove', (e) => {
+  const s = _sw; if (!s) return;
+  const x = e.touches[0].clientX, y = e.touches[0].clientY;
+  const dx = x - s.x0, dy = y - s.y0;
+  if (!s.locked) {
+    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+    if (Math.abs(dx) < Math.abs(dy) * 1.3) { _sw = null; return; } // vertical scroll: let the page scroll
+    s.locked = true;
+  }
+  if (e.cancelable) e.preventDefault();
+  const now = performance.now(), dt = now - s.lastT;
+  if (dt > 0) s.vx = 0.6 * s.vx + 0.4 * ((x - s.lastX) / dt);
+  s.lastX = x; s.lastT = now;
+  _swDrag(s, dx);
+}, { passive: false });
+document.addEventListener('touchend', () => {
+  const s = _sw; _sw = null;
+  if (!s || !s.locked) return;
+  if (performance.now() - s.lastT > 90) s.vx = 0; // finger held still before release: not a flick
+  const fling = Math.abs(s.vx) > 0.45 && Math.sign(s.vx) === Math.sign(s.dx) && Math.abs(s.dx) > 30;
+  const go = !!s.target && (Math.abs(s.dx) > _W() * 0.3 || fling);
+  if (go && s.pane) _swFinish(s, true);
+  else if (go) { _swFinish(s, false); swipeFallback(s.side, s.nb); }
+  else _swFinish(s, false);
+}, { passive: true });
+document.addEventListener('touchcancel', () => {
+  const s = _sw; _sw = null;
+  if (s && s.locked) _swFinish(s, false);
 }, { passive: true });
 
 // progressively load posters for visible cards (only when a TMDB key is set)
@@ -2331,7 +2498,6 @@ route('show', async (el, rest) => {
 
 //////////////////////// Episode detail ////////////////////////
 // Previous / next episode of the episode page (specials stay among specials).
-let epNeighbors = { key: null, prev: null, next: null };
 async function episodeNeighbors(tmdbId, season, n) {
   const out = { prev: null, next: null };
   if (!tmdbId) return out;
@@ -2346,13 +2512,6 @@ async function episodeNeighbors(tmdbId, season, n) {
   if (!out.prev && si > 0) { const p = await epsOf(seasons[si - 1]); if (p.length) out.prev = { s: seasons[si - 1], n: p[p.length - 1] }; }
   if (!out.next && si >= 0 && si < seasons.length - 1) { const q = await epsOf(seasons[si + 1]); if (q.length) out.next = { s: seasons[si + 1], n: q[0] }; }
   return out;
-}
-function goToNeighborEpisode(which) {
-  const ep = epNeighbors[which];
-  if (!ep || !epNeighbors.key) return;
-  _pendingSlideDir = which === 'next' ? 1 : -1;
-  _navReplace = true;
-  location.replace('#/episode/' + encodeURIComponent(epNeighbors.key) + '/' + ep.s + '/' + ep.n);
 }
 route('episode', async (el, rest) => {
   buildModel();
@@ -2388,7 +2547,8 @@ route('episode', async (el, rest) => {
     : '';
 
   const stillImg = ep && ep.still ? `<img src="${IMG(ep.still, 'w780')}" alt="">` : `<div class="ep-still-ph">${season}×${String(n).padStart(2, '0')}</div>`;
-  epNeighbors = { key: sh.key, ...(await episodeNeighbors(tmdbId, season, n)) };
+  const nb = { key: sh.key, ...(await episodeNeighbors(tmdbId, season, n)) };
+  el._epNb = nb; // read by the swipe to know the previous / next episode of this page
   const epLabel = (e) => `${e.s}×${String(e.n).padStart(2, '0')}`;
   el.innerHTML = `
     ${backBtn('#/show/' + encodeURIComponent(sh.key))}
@@ -2397,8 +2557,8 @@ route('episode', async (el, rest) => {
       <div class="ep-num-row">
         <div class="ep-num">Saison ${season} · Épisode ${n}</div>
         <div class="ep-nav">
-          ${epNeighbors.prev ? `<button class="btn sm ghost" data-epnav="prev" title="Épisode précédent">‹ ${epLabel(epNeighbors.prev)}</button>` : ''}
-          ${epNeighbors.next ? `<button class="btn sm ghost" data-epnav="next" title="Épisode suivant">${epLabel(epNeighbors.next)} ›</button>` : ''}
+          ${nb.prev ? `<button class="btn sm ghost" data-epnav="prev" title="Épisode précédent">‹ ${epLabel(nb.prev)}</button>` : ''}
+          ${nb.next ? `<button class="btn sm ghost" data-epnav="next" title="Épisode suivant">${epLabel(nb.next)} ›</button>` : ''}
         </div>
       </div>
       <div class="ep-visual">${stillImg}</div>
@@ -2417,7 +2577,7 @@ route('episode', async (el, rest) => {
     ${rows ? `<div class="about" style="margin-top:16px">${infoBlock(rows)}</div>` : ''}
     ${guestsHtml}`;
 
-  el.querySelectorAll('[data-epnav]').forEach(b => b.onclick = () => goToNeighborEpisode(b.dataset.epnav));
+  el.querySelectorAll('[data-epnav]').forEach(b => b.onclick = () => swipeTo(b.dataset.epnav));
   el.querySelector('#epSeen').onclick = () => {
     const wasComplete = isShowComplete(sh);
     toggleSeen(sh, season, n);
@@ -3248,7 +3408,7 @@ route('preview', async (el, rest) => {
         ${trailerHtml(meta.trailer)}`;
       wireTrailer(pv);
       renderAppreciation(pv.querySelector('#apprSlot'), 'movie', id, meta);
-      pv.querySelector('#pvAdd').onclick = () => { addCustomMovie({ id, title: meta.title, release_date: meta.release, poster_path: meta.poster }); openMovie(meta.title); };
+      pv.querySelector('#pvAdd').onclick = () => { openMovie(addCustomMovie({ id, title: meta.title, release_date: meta.release, poster_path: meta.poster })); };
     }
   } catch { pv.innerHTML = `<div class="empty"><div class="big">⚠️</div>Impossible de charger l'aperçu.</div>`; }
 });
@@ -3902,6 +4062,48 @@ async function mergeSharedList(parsed) {
   toast(`Ajouté : ${addedShows} série(s), ${addedMovies} film(s)`);
 }
 // Replace the in-memory catalogue in place (DATA is a const reference).
+// Films added by hand that are in fact a film of the history (same TMDB id, or same
+// title in either language): move their info onto the history film and drop the copy.
+function reconcileDuplicateMovies() {
+  const cm = userState.customMovies || [];
+  if (!cm.length || !(DATA.movies || []).length) return 0;
+  const idOf = (name) => { const r = (userState.movieTmdb && userState.movieTmdb[name]) || (tmdbCache.movies && tmdbCache.movies[name]); return r && r.id != null ? String(r.id) : null; };
+  const byId = new Map(), byName = new Map();
+  for (const d of DATA.movies) {
+    const id = idOf(d.name); if (id) byId.set(id, d);
+    byName.set(_normName(d.name), d);
+    const fr = tmdbCache.movies && tmdbCache.movies[d.name] && tmdbCache.movies[d.name].title;
+    if (fr && !byName.has(_normName(fr))) byName.set(_normName(fr), d);
+  }
+  const bag = (k) => (userState[k] = userState[k] || {});
+  let merged = 0;
+  for (const c of cm.slice()) {
+    const cid = idOf(c.name);
+    const d = (cid && byId.get(cid)) || byName.get(_normName(c.name));
+    if (!d || d.name === c.name) continue;
+    const did = idOf(d.name);
+    if (cid && did && cid !== did) continue; // same title, different film (remake…)
+    const cn = c.name, dn = d.name;
+    if (movieStatus(c) === 'watched') {
+      bag('movieStatus')[dn] = 'watched';
+      const cw = userState.movieWatchedAt && userState.movieWatchedAt[cn], dw = movieWatchedOf(d);
+      if (cw && (!dw || cw < dw)) bag('movieWatchedAt')[dn] = cw;
+    }
+    const rw = Math.max(movieRewatchOf(d), movieRewatchOf(c));
+    if (rw > movieRewatchOf(d)) bag('movieRewatch')[dn] = rw;
+    if (userState.movieRatings && userState.movieRatings[cn] && !movieRatingOf(d)) bag('movieRatings')[dn] = userState.movieRatings[cn];
+    if (userState.movieEmotions && userState.movieEmotions[cn] && !userState.movieEmotions[dn]) bag('movieEmotions')[dn] = userState.movieEmotions[cn];
+    if (isFavMovie(c)) bag('favMovies')[dn] = true;
+    if (userState.movieProgress && userState.movieProgress[cn] && !userState.movieProgress[dn]) bag('movieProgress')[dn] = userState.movieProgress[cn];
+    if (userState.movieTmdb && userState.movieTmdb[cn] && !idOf(dn)) bag('movieTmdb')[dn] = userState.movieTmdb[cn];
+    for (const l of userState.userLists || []) if (l.movies && l.movies.includes(cn)) l.movies = [...new Set(l.movies.map(x => x === cn ? dn : x))];
+    for (const k of ['movieStatus', 'movieWatchedAt', 'movieRewatch', 'movieRatings', 'movieEmotions', 'favMovies', 'movieProgress', 'movieTmdb']) if (userState[k]) delete userState[k][cn];
+    cm.splice(cm.indexOf(c), 1);
+    merged++;
+  }
+  if (merged) { scheduleSaveState(); MODEL = null; }
+  return merged;
+}
 function applyDataObject(obj) {
   for (const k of Object.keys(DATA)) delete DATA[k];
   Object.assign(DATA, obj);
@@ -3928,13 +4130,15 @@ function importData(ev) {
       }
       const cat = parsed && parsed.data && (parsed.data.shows || parsed.data.seen) ? parsed.data : null;
       if (cat) {
-        // Sauvegarde complète : restaure le catalogue (historique) durablement.
-        applyDataObject(cat);
-        await persistDataOverride(cat);
+        // Sauvegarde complète : restaure le catalogue (historique) durablement — sauf si le
+        // fichier en contient beaucoup moins que l'app (ex. une simple liste) : on garde le nôtre.
+        const poorer = (cat.seen || []).length < (DATA.seen || []).length / 2 || (cat.movies || []).length < (DATA.movies || []).length / 2;
+        if (!poorer) { applyDataObject(cat); await persistDataOverride(cat); }
         if (parsed.userState && typeof parsed.userState === 'object') userState = Object.assign(userState, parsed.userState);
+        const merged = reconcileDuplicateMovies();
         scheduleSaveState();
         MODEL = null;
-        toast('Sauvegarde complète restaurée');
+        toast((poorer ? 'Réglages importés — votre historique, plus complet, a été conservé' : 'Sauvegarde complète restaurée') + (merged ? ` · ${merged} film(s) en double fusionné(s)` : ''));
         render();
       } else {
         // Ancien format : uniquement les éditions utilisateur.
@@ -4036,6 +4240,8 @@ function applyTheme() {
   } catch {}
 
   applyTmdbOverrides();
+  const mergedDup = reconcileDuplicateMovies();
+  if (mergedDup) setTimeout(() => toast(`${mergedDup} film(s) ajouté(s) à la main fusionné(s) avec votre historique`), 1500);
   updateSyncStatus();
   applyTheme();
   if (!location.hash) location.hash = '#/home';

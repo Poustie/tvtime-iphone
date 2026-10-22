@@ -84,6 +84,8 @@ main {
 /* Basic category slide transition */
 .page-anim { will-change: transform; }
 .page-snap { position: fixed; left: 0; right: 0; top: 0; height: 100dvh; z-index: 30; overflow: hidden; pointer-events: none; will-change: transform; }
+/* Neighbouring page prepared for swiping: hidden until a swipe shows it */
+.app-pane { position: fixed; left: 0; right: 0; top: 0; z-index: 30; visibility: hidden; pointer-events: none; will-change: transform; }
 .page-head { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
 .page-head h1 { font-size: 24px; margin: 0; }
 .page-head .sub { color: var(--muted); font-size: 13px; }
