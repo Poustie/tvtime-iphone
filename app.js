@@ -15,6 +15,8 @@ const CHANGELOG = [
     'Les films que vous avez rajoutés à la main alors qu\'ils étaient déjà dans votre historique (ex. Hunger Games en français et en anglais) sont fusionnés automatiquement : vu, revisionnages, note, réaction et favori sont conservés.',
     'Importer un fichier qui ne contient pas d\'historique (par exemple une liste partagée) n\'efface plus votre historique.',
     'La recherche de films trouve maintenant aussi les titres français (ex. « Âge de glace » trouve Ice Age), et ajouter un film déjà dans votre bibliothèque ouvre sa fiche au lieu de créer un doublon.',
+    'Corrigé : Avengers (2012), Thor (2011) et L\'Empire contre-attaque s\'affichaient sous un mauvais film (date de sortie manquante dans l\'export TV Time).',
+    'Vérification complète de vos 941 films : ceux qui s\'affichaient comme un autre film (ex. Harry Potter 7 partie 2 → partie 1, John Wick → John Wick 3, Fast & Furious → 2 Fast 2 Furious, Old → Oldboy) sont maintenant reconnus correctement.',
   ] },
   { id: 30, date: '6 octobre 2026', title: 'Glissement qui suit le doigt', items: [
     'Entre les catégories (Séries, Films, Explorer, Profil) et entre les épisodes, la page suit maintenant votre doigt : on voit la page suivante arriver pendant le geste. Relâchez avant la moitié et la page revient ; un geste rapide suffit pour passer.',
@@ -1725,7 +1727,8 @@ function setMovieStatus(name, status) {
 function movieYear(m) {
   const d = m.releaseDate || '';
   const y = /^\d{4}/.exec(d);
-  return y ? y[0] : '';
+  // TV Time writes 1970-01-01 or 0001-01-01 when the date is unknown
+  return y && +y[0] > 1880 && !d.startsWith('1970-01-01') ? y[0] : '';
 }
 // Date used for the "recently added / oldest" library sort.
 function showAddedAt(s) { return s.createdAt || ''; }
@@ -1801,7 +1804,7 @@ route('movie', async (el, rest) => {
   let meta = null;
   if (hasKey()) {
     try {
-      let rec = (userState.movieTmdb && userState.movieTmdb[name]) || (tmdbCache.movies && tmdbCache.movies[name]);
+      let rec = (userState.movieTmdb && userState.movieTmdb[name]) || null;
       if (!rec) rec = await resolveMovie(name, movieYear(m));
       if (rec && rec.id) meta = await getMovieMeta(rec.id);
     } catch {}
@@ -1963,19 +1966,53 @@ function wireMovieButtons(container) {
 }
 
 // Resolve a movie poster from TMDB by name (+year), cached in tmdbCache.movies.
+// Best TMDB result for a title: exact title (original or French) first, then the year, then popularity.
+const _normTitle = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+function pickMovieHit(results, name, year) {
+  const n = _normTitle(name);
+  let best = null, bestS = -Infinity;
+  for (const h of results || []) {
+    const t = _normTitle(h.title), o = _normTitle(h.original_title);
+    let s = Math.log10((h.vote_count || 0) + 1) * 3;
+    if (t === n || o === n) s += 100;
+    else if ((t && (t.includes(n) || n.includes(t))) || (o && (o.includes(n) || n.includes(o)))) s += 20;
+    const hy = +(h.release_date || '').slice(0, 4);
+    if (year && hy && Math.abs(hy - +year) > 5) continue; // another film with the same title
+    if (year && hy) { const dy = Math.abs(hy - +year); s += dy === 0 ? 30 : dy === 1 ? 15 : -20; }
+    if (s > bestS) { bestS = s; best = h; }
+  }
+  return best;
+}
+const MOVIE_RESOLVER = 3; // bump to re-check every cached match once
 async function resolveMovie(name, year) {
   if (!tmdbCache.movies) tmdbCache.movies = {};
   const cached = tmdbCache.movies[name];
-  // Déjà résolu (y compris le titre français) OU marqué introuvable -> on garde.
-  if (cached === null || (cached && 'title' in cached)) return cached;
+  // Déjà résolu avec la méthode actuelle OU marqué introuvable -> on garde.
+  if (cached === null || (cached && 'title' in cached && cached.v === MOVIE_RESOLVER)) return cached;
   try {
-    const q = `/search/movie?query=${encodeURIComponent(name)}${year ? '&year=' + year : ''}`;
-    const res = await tmdbFetch(q);
-    const hit = (res.results && res.results[0]) || null;
-    tmdbCache.movies[name] = hit ? { id: hit.id, poster: hit.poster_path || null, title: hit.title || null } : null;
+    const enc = encodeURIComponent(name);
+    let results = (await tmdbFetch(`/search/movie?query=${enc}${year ? '&year=' + year : ''}`)).results || [];
+    let hit = pickMovieHit(results, name, year);
+    const exact = (h) => h && [h.title, h.original_title].some(x => _normTitle(x) === _normTitle(name));
+    if (year && !exact(hit)) {
+      results = results.concat(((await tmdbFetch(`/search/movie?query=${enc}`)).results || []).filter(h => !results.some(r => r.id === h.id)));
+      hit = pickMovieHit(results, name, year);
+    }
+    tmdbCache.movies[name] = hit ? { id: hit.id, poster: hit.poster_path || null, title: hit.title || null, v: MOVIE_RESOLVER } : null;
   } catch { if (!cached) tmdbCache.movies[name] = null; }
   scheduleSaveCache();
   return tmdbCache.movies[name];
+}
+// Once per resolver version: re-check in the background every history film matched the old way.
+async function refreshMovieMatches() {
+  if (!hasKey() || (tmdbCache.movieResolver || 0) >= MOVIE_RESOLVER) return;
+  const todo = (DATA.movies || []).filter(m => !(userState.movieTmdb && userState.movieTmdb[m.name]) && !(tmdbCache.movies[m.name] && tmdbCache.movies[m.name].v === MOVIE_RESOLVER));
+  let i = 0;
+  const worker = async () => { while (i < todo.length) { const m = todo[i++]; try { await resolveMovie(m.name, movieYear(m)); } catch {} } };
+  await Promise.all(Array.from({ length: 3 }, worker));
+  tmdbCache.movieResolver = MOVIE_RESOLVER;
+  scheduleSaveCache();
+  reconcileDuplicateMovies();
 }
 
 async function hydrateMoviePosters(container, list) {
@@ -4248,6 +4285,7 @@ function applyTheme() {
   render();
   maybeShowChangelogPopup();
   maybeWeeklyBackup();
+  setTimeout(refreshMovieMatches, 6000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') maybeWeeklyBackup(); });
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
