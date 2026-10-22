@@ -11,6 +11,10 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 32, date: '22 octobre 2026', title: 'Explorer : ajout plus simple', items: [
+    'Après avoir ajouté un film ou une série avec le ＋ d\'une affiche, l\'affiche passe à « ✓ Dans ma liste » et l\'ouvrir mène directement à votre fiche (plus besoin de « Ajouter » une deuxième fois).',
+    'Après « Ajouter » sur un aperçu, le bouton ← ramène à Explorer au lieu de l\'ancien aperçu. Les films de votre historique sont aussi mieux reconnus dans Explorer.',
+  ] },
   { id: 31, date: '22 octobre 2026', title: 'Films en double & import plus sûr', items: [
     'Les films que vous avez rajoutés à la main alors qu\'ils étaient déjà dans votre historique (ex. Hunger Games en français et en anglais) sont fusionnés automatiquement : vu, revisionnages, note, réaction et favori sont conservés.',
     'Importer un fichier qui ne contient pas d\'historique (par exemple une liste partagée) n\'efface plus votre historique.',
@@ -1066,6 +1070,11 @@ function trackNav(hash, name) {
 function navTo(hash) {
   if (navStack.length > 1 && navStack[navStack.length - 2] === hash) history.back();
   else location.hash = hash;
+}
+// Swap the current page for another one (the current one won't come back with « ← »).
+function replaceRoute(hash) {
+  _navReplace = true;
+  location.replace(hash);
 }
 document.addEventListener('click', (ev) => {
   const b = ev.target.closest && ev.target.closest('[data-back]');
@@ -3132,11 +3141,12 @@ function wireExpHits(container, hits, ownedKey) {
     ev.stopPropagation();
     const h = hits[parseInt(b.getAttribute('data-add'), 10)];
     if (h.media_type === 'tv') addCustomShow(h); else addCustomMovie(h);
-    b.textContent = '✓';
+    b.closest('.exp-hit').classList.add('owned');
+    b.outerHTML = '<span class="owned-badge">✓ Dans ma liste</span>';
   });
   container.querySelectorAll('.exp-hit').forEach(card => card.onclick = () => {
     const h = hits[parseInt(card.getAttribute('data-open'), 10)];
-    const key = ownedKey(h);
+    const key = ownedLookup()(h); // fresh: the work may have just been added with ＋
     // Already in the library -> open the real tracked page, not a preview.
     if (key && h.media_type === 'tv') { openShow(key); return; }
     if (key && h.media_type === 'movie') { openMovie(key); return; }
@@ -3398,6 +3408,9 @@ route('preview', async (el, rest) => {
   const pv = el.querySelector('#pv');
   if (!hasKey()) { pv.innerHTML = needKeyHtml("L'aperçu a besoin d'une clé TMDB."); return; }
   try {
+    // Already in my library -> show my own page instead of the preview.
+    const ownKey = ownedLookup()({ media_type: kind === 'tv' ? 'tv' : 'movie', id });
+    if (ownKey) { replaceRoute((kind === 'tv' ? '#/show/' : '#/movie/') + encodeURIComponent(ownKey)); return; }
     if (kind === 'tv') {
       const meta = await getShowMeta(id);
       const genres = meta.genres.join(' · ');
@@ -3421,7 +3434,7 @@ route('preview', async (el, rest) => {
         ${trailerHtml(meta.trailer)}`;
       wireTrailer(pv);
       renderAppreciation(pv.querySelector('#apprSlot'), 'tv', id, meta);
-      pv.querySelector('#pvAdd').onclick = () => { addCustomShow({ id, name: meta.name, poster_path: meta.poster }); openShow('tmdb:' + id); };
+      pv.querySelector('#pvAdd').onclick = () => { addCustomShow({ id, name: meta.name, poster_path: meta.poster }); replaceRoute('#/show/' + encodeURIComponent('tmdb:' + id)); };
     } else {
       const meta = await getMovieMeta(id);
       const genres = meta.genres.join(' · ');
@@ -3445,7 +3458,7 @@ route('preview', async (el, rest) => {
         ${trailerHtml(meta.trailer)}`;
       wireTrailer(pv);
       renderAppreciation(pv.querySelector('#apprSlot'), 'movie', id, meta);
-      pv.querySelector('#pvAdd').onclick = () => { openMovie(addCustomMovie({ id, title: meta.title, release_date: meta.release, poster_path: meta.poster })); };
+      pv.querySelector('#pvAdd').onclick = () => { replaceRoute('#/movie/' + encodeURIComponent(addCustomMovie({ id, title: meta.title, release_date: meta.release, poster_path: meta.poster }))); };
     }
   } catch { pv.innerHTML = `<div class="empty"><div class="big">⚠️</div>Impossible de charger l'aperçu.</div>`; }
 });
@@ -3462,9 +3475,10 @@ function ownedLookup() {
   }
   const movieByTmdb = new Map(), movieByName = new Map();
   for (const m of (DATA.movies || []).concat(userState.customMovies || [])) {
-    const rec = userState.movieTmdb && userState.movieTmdb[m.name];
+    const rec = (userState.movieTmdb && userState.movieTmdb[m.name]) || (tmdbCache.movies && tmdbCache.movies[m.name]);
     if (rec && rec.id != null) movieByTmdb.set(String(rec.id), m.name);
     movieByName.set(norm(m.name), m.name);
+    if (rec && rec.title && !movieByName.has(norm(rec.title))) movieByName.set(norm(rec.title), m.name);
   }
   return (h) => h.media_type === 'tv'
     ? (showByTmdb.get(String(h.id)) || showByName.get(norm(h.name || h.title || '')) || null)
