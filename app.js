@@ -11,6 +11,9 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 33, date: '27 octobre 2026', title: 'Affiche en grand', items: [
+    'Sur la fiche d\'une série ou d\'un film (y compris l\'aperçu avant ajout), touchez l\'affiche pour la voir en grand. Touchez l\'écran, la croix ou Échap pour fermer.',
+  ] },
   { id: 32, date: '22 octobre 2026', title: 'Explorer : ajout plus simple', items: [
     'Après avoir ajouté un film ou une série avec le ＋ d\'une affiche, l\'affiche passe à « ✓ Dans ma liste » et l\'ouvrir mène directement à votre fiche (plus besoin de « Ajouter » une deuxième fois).',
     'Après « Ajouter » sur un aperçu, le bouton ← ramène à Explorer au lieu de l\'ancien aperçu. Les films de votre historique sont aussi mieux reconnus dans Explorer.',
@@ -4212,6 +4215,25 @@ function showModal(html, onReady) {
   if (onReady) onReady(root);
 }
 function closeModal() { document.getElementById('modalRoot').innerHTML = ''; }
+// Affiche en grand : clic sur l'affiche d'une fiche (série / film, y compris l'aperçu).
+function openPosterViewer(src) {
+  closePosterViewer();
+  const v = document.createElement('div');
+  v.className = 'poster-viewer';
+  v.innerHTML = `<img src="${src}" alt=""><button class="pv-close" aria-label="Fermer">✕</button>`;
+  v.onclick = closePosterViewer;
+  document.body.appendChild(v);
+}
+function closePosterViewer() { document.querySelectorAll('.poster-viewer').forEach(n => n.remove()); }
+document.addEventListener('click', (ev) => {
+  const img = ev.target.closest && ev.target.closest('.detail-hero .poster img');
+  if (!img) return;
+  ev.stopPropagation();
+  openPosterViewer(img.src.replace(/\/t\/p\/w\d+\//, '/t/p/w780/'));
+}, true);
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closePosterViewer(); });
+window.addEventListener('hashchange', closePosterViewer);
+
 
 // Pop-up « Nouveautés » : au premier lancement suivant une mise à jour, liste les
 // notes de version ajoutées depuis la dernière visite. Fermée = marquée comme vue.

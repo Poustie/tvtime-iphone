@@ -618,3 +618,9 @@ html.amoled .bottom-nav { background: rgba(0,0,0,.94); }
   .upnext-row .poster { width: 48px; }
 }
 
+
+/* Affiche en grand (clic sur l'affiche dans une fiche série / film) */
+.detail-hero .poster img { cursor: zoom-in; }
+.poster-viewer { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.92); display: flex; align-items: center; justify-content: center; padding: 16px; cursor: zoom-out; }
+.poster-viewer img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,.6); }
+.poster-viewer .pv-close { position: absolute; top: calc(12px + env(safe-area-inset-top, 0px)); right: 14px; width: 40px; height: 40px; border-radius: 50%; border: 0; background: rgba(255,255,255,.15); color: #fff; font-size: 20px; }
