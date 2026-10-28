@@ -636,3 +636,17 @@ html.amoled .bottom-nav { background: rgba(0,0,0,.94); }
   .show-card:not(.show-actions) :is(.card-arch, .card-del, .find-poster, .card-pin, .card-rw) { pointer-events: none; }
   .show-card.show-actions :is(.card-arch, .card-del, .find-poster, .card-pin, .card-rw) { opacity: 1; pointer-events: auto; }
 }
+
+/* Communauté : avatars, amis, activité */
+.avatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; flex: none; background: var(--bg3); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; color: var(--accent); border: 1px solid var(--line); }
+.avatar.lg { width: 84px; height: 84px; font-size: 32px; }
+.friend-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); color: inherit; text-decoration: none; }
+.friend-row:last-child { border-bottom: 0; }
+.friend-row small { display: block; color: var(--muted); }
+.feed-line { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.feed-line:last-child { border-bottom: 0; }
+.fr-grid { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; touch-action: pan-x pan-y; }
+.fr-item { width: 96px; flex: none; }
+.fr-item img, .fr-noimg { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 8px; background: var(--bg3); display: block; }
+.fr-noimg { display: flex; align-items: center; justify-content: center; text-align: center; font-size: 12px; padding: 6px; color: var(--muted); }
+.fr-item small { display: block; font-size: 12px; margin-top: 4px; line-height: 1.2; }

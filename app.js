@@ -11,6 +11,11 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 37, date: '28 octobre 2026', title: 'Amis', items: [
+    'Nouveau : Profil → Amis. Choisissez un pseudo et une photo de profil, puis rendez votre profil visible si vous le souhaitez (il est invisible par défaut).',
+    'Vos amis peuvent vous suivre en tapant votre pseudo, et vous voyez leurs séries en cours, leur activité récente et leurs favoris. Vous choisissez ce qui est partagé.',
+    'Il faut être connecté (Réglages → Sauvegarde en ligne). Le profil est mis à jour à chaque ouverture de l\'application.',
+  ] },
   { id: 36, date: '28 octobre 2026', title: 'Sauvegarde en ligne', items: [
     'Nouveau dans Réglages → « Sauvegarde en ligne » : connectez-vous avec votre e-mail (un lien vous est envoyé, pas de mot de passe) et votre historique est copié sur Internet, en privé.',
     'Une seule sauvegarde, remplacée à chaque fois : automatiquement une fois par semaine quand vous ouvrez l\'application, ou à la demande avec « Sauvegarder maintenant ».',
@@ -3648,6 +3653,7 @@ route('profile', async (el) => {
     <div class="profile-menu" style="margin-bottom:22px">
       <a class="menu-card" href="#/library"><span class="ic">📚</span><b>Bibliothèque</b><small>Toutes vos œuvres — séries &amp; films</small></a>
       <a class="menu-card" href="#/stats"><span class="ic">📊</span><b>Statistiques</b><small>Séries &amp; films</small></a>
+      <a class="menu-card" href="#/friends"><span class="ic">👥</span><b>Amis</b><small>Pseudo, photo, activité de vos amis</small></a>
       <a class="menu-card" href="#/lists"><span class="ic">📃</span><b>Listes</b><small>Créez et modifiez vos listes</small></a>
       <a class="menu-card" href="#/settings"><span class="ic">⚙️</span><b>Réglages</b><small>Clé TMDB, synchronisation, sauvegarde</small></a>
       <a class="menu-card" href="#/changelog"><span class="ic">🆕</span><b>Notes de version</b><small>Les nouveautés de chaque mise à jour</small></a>
@@ -4197,6 +4203,264 @@ function sbMaybeAutoBackup() {
   return true;
 }
 
+//////////////////////// Communauté (profils & amis, via Supabase) ////////////////////////
+// Tables profiles / follows (voir supabase-communaute.sql). Un profil n'est lisible par les autres que si
+// is_public = true ; on n'y publie qu'un petit résumé (jamais la sauvegarde complète).
+let sbProfile = null; // mon profil : { pseudo, is_public, avatar, updated_at } — null = pas encore créé
+let _sbPubAt = 0;
+async function sbApi(path, { method = 'GET', json, headers = {} } = {}) {
+  const token = await sbToken();
+  if (!token) throw new Error('Non connecté');
+  const res = await sbRequest('/rest/v1/' + path, { method, json, token, headers });
+  if (!res.ok) {
+    if (res.status === 409) throw new Error(path.startsWith('profiles') ? 'Ce pseudo est déjà pris' : 'Déjà dans vos amis');
+    throw await sbError(res);
+  }
+  const t = await res.text();
+  return t ? JSON.parse(t) : null;
+}
+async function sbLoadProfile() {
+  const rows = await sbApi('profiles?id=eq.' + sbSession.uid + '&select=pseudo,is_public,avatar,updated_at');
+  sbProfile = (rows && rows[0]) || null;
+  return sbProfile;
+}
+async function sbCreateProfile(pseudo) {
+  if (!/^[A-Za-z0-9_.-]{3,20}$/.test(pseudo)) throw new Error('Pseudo : 3 à 20 caractères (lettres, chiffres, _ . -)');
+  await sbApi('profiles', { method: 'POST', json: { id: sbSession.uid, pseudo }, headers: { Prefer: 'return=minimal' } });
+  await sbLoadProfile();
+}
+const SHARE_DEFAULT = { watching: true, recent: true, favs: true };
+const shareOpt = (k) => ((userState.share || {})[k] !== undefined ? userState.share[k] : SHARE_DEFAULT[k]);
+// Résumé publié sur le profil (petit : séries en cours, activité récente, favoris, compteurs).
+function buildShareSnapshot() {
+  buildModel();
+  const shows = Array.from(MODEL.shows.values());
+  const movies = (DATA.movies || []).concat(userState.customMovies || []);
+  const snap = {
+    v: 1, at: new Date().toISOString(),
+    stats: { eps: computeSeenCount(), shows: shows.filter(s => s.seenKeys.size > 0).length, movies: movies.filter(m => movieStatus(m) === 'watched').length },
+  };
+  const posterOf = (s) => { const m = metaFor(s); return (m && m.poster) || s.poster || null; };
+  if (shareOpt('watching')) {
+    snap.watching = shows.filter(s => !s.archived && s.seenKeys.size > 0 && daysSince(s.lastSeenAt) <= ACTIVE_DAYS)
+      .map(s => ({ s, total: airedTotal(metaFor(s)) }))
+      .filter(x => !(x.total > 0 && x.s.seenKeys.size >= x.total))
+      .sort((a, b) => (b.s.lastSeenAt || '').localeCompare(a.s.lastSeenAt || ''))
+      .slice(0, 12)
+      .map(x => ({ n: displayName(x.s), p: posterOf(x.s), d: x.s.seenKeys.size, t: x.total || 0 }));
+  }
+  if (shareOpt('recent')) {
+    const ev = [];
+    for (const r of DATA.seen || []) {
+      if (r.showId == null || r.showId === '' || !r.seenAt) continue;
+      if (userState.seenRemove[epKey(r.showId, r.season, r.number)]) continue;
+      ev.push({ k: 'e', at: r.seenAt, sk: String(r.showId), s: r.season, e: r.number });
+    }
+    for (const [kk, v] of Object.entries(userState.seenAdd || {})) {
+      if (!v || !v.at) continue;
+      const [sk, s, e] = kk.split('|');
+      ev.push({ k: 'e', at: v.at, sk, s, e });
+    }
+    for (const m of movies) if (movieStatus(m) === 'watched') { const at = movieWatchedOf(m); if (at) ev.push({ k: 'm', at, n: movieDisplayName(m) }); }
+    ev.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    const groups = [];
+    for (const x of ev) {
+      if (groups.length >= 10) break;
+      if (x.k === 'e') {
+        const sh = MODEL.shows.get(x.sk); if (!sh) continue;
+        const last = groups[groups.length - 1];
+        if (last && last.k === 'e' && last.sk === x.sk) { last.c++; continue; }
+        groups.push({ k: 'e', sk: x.sk, n: displayName(sh), e: 'S' + String(x.s).padStart(2, '0') + 'E' + String(x.e).padStart(2, '0'), c: 1, at: x.at });
+      } else groups.push({ k: 'm', n: x.n, c: 1, at: x.at });
+    }
+    snap.recent = groups.map(g => ({ k: g.k, n: g.n, e: g.e, c: g.c, at: g.at }));
+  }
+  if (shareOpt('favs')) {
+    snap.favShows = shows.filter(s => isFavShow(s)).slice(0, 15).map(s => ({ n: displayName(s), p: posterOf(s) }));
+    snap.favMovies = movies.filter(m => isFavMovie(m)).slice(0, 15).map(m => ({ n: movieDisplayName(m), p: (tmdbCache.movies && tmdbCache.movies[m.name] && tmdbCache.movies[m.name].poster) || null }));
+  }
+  return snap;
+}
+// Met à jour mon profil en ligne (résumé si public, sinon effacé). `extra` = autres champs à modifier.
+async function sbPublishProfile(force, extra) {
+  if (!sbSession || !sbProfile) return;
+  if (!force && !extra && Date.now() - _sbPubAt < 3600000) return;
+  _sbPubAt = Date.now();
+  const isPublic = extra && extra.is_public !== undefined ? extra.is_public : sbProfile.is_public;
+  const body = Object.assign({}, extra, { snapshot: isPublic ? buildShareSnapshot() : null, updated_at: new Date().toISOString() });
+  await sbApi('profiles?id=eq.' + sbSession.uid, { method: 'PATCH', json: body, headers: { Prefer: 'return=minimal' } });
+  Object.assign(sbProfile, extra || {}, { updated_at: body.updated_at });
+}
+// En arrière-plan (ouverture de l'app) : republie le résumé au plus une fois par heure.
+async function sbMaybePublish() {
+  if (!sbSession) return;
+  try { if (!sbProfile) await sbLoadProfile(); if (sbProfile && sbProfile.is_public) await sbPublishProfile(false); } catch {}
+}
+// Photo de profil : recadrée au carré et réduite à 160 px (≈ 10 Ko) avant l'envoi.
+function avatarFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const S = 160, side = Math.min(img.naturalWidth, img.naturalHeight);
+      const c = document.createElement('canvas'); c.width = c.height = S;
+      c.getContext('2d').drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, S, S);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image illisible')); };
+    img.src = url;
+  });
+}
+const safeAvatar = (a) => (typeof a === 'string' && /^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/.test(a)) ? a : null;
+const safePoster = (p) => (typeof p === 'string' && /^\/[A-Za-z0-9_.-]+$/.test(p)) ? p : null;
+function avatarHtml(avatar, pseudo, cls = '') {
+  const a = safeAvatar(avatar);
+  return a ? `<img class="avatar ${cls}" src="${a}" alt="">` : `<span class="avatar ${cls}">${esc((pseudo || '?').slice(0, 1).toUpperCase())}</span>`;
+}
+function activityText(g) {
+  if (g.k === 'm') return `a vu le film ${g.n}`;
+  return g.c > 1 ? `a vu ${g.c} épisodes de ${g.n} (jusqu'à ${g.e})` : `a vu ${g.e} de ${g.n}`;
+}
+async function sbLoadFriends() {
+  const f = await sbApi('follows?follower=eq.' + sbSession.uid + '&select=followed');
+  const ids = (f || []).map(r => r.followed).filter(id => /^[0-9a-f-]{36}$/.test(id));
+  if (!ids.length) return [];
+  return (await sbApi('profiles?id=in.(' + ids.join(',') + ')&select=id,pseudo,avatar,snapshot,updated_at')) || [];
+}
+async function sbFollowByPseudo(pseudo) {
+  if (!/^[A-Za-z0-9_.-]{3,20}$/.test(pseudo)) throw new Error('Pseudo invalide');
+  const rows = await sbApi('profiles?pseudo=ilike.' + encodeURIComponent(pseudo.replace(/_/g, '\\_')) + '&select=id,pseudo');
+  const hit = (rows || []).find(r => r.pseudo.toLowerCase() === pseudo.toLowerCase());
+  if (!hit) throw new Error('Aucun profil visible avec ce pseudo (il doit être rendu visible par son propriétaire)');
+  if (hit.id === sbSession.uid) throw new Error('C\'est votre propre pseudo 🙂');
+  await sbApi('follows', { method: 'POST', json: { follower: sbSession.uid, followed: hit.id }, headers: { Prefer: 'return=minimal' } });
+  return hit.pseudo;
+}
+
+const FR_HEAD = `<a class="btn ghost sm" href="#/profile">← Profil</a>`;
+route('friends', async (el) => {
+  if (!sbSession) {
+    el.innerHTML = `${FR_HEAD}<div class="page-head"><h1>👥 Amis</h1></div>
+      <div class="empty"><div class="big">👥</div><p>Pour retrouver vos amis, connectez-vous d'abord avec votre e-mail (Réglages → Sauvegarde en ligne).</p><a class="btn primary" href="#/settings">Ouvrir les Réglages</a></div>`;
+    return;
+  }
+  el.innerHTML = `${FR_HEAD}<div class="page-head"><h1>👥 Amis</h1></div><p class="hint" style="color:var(--muted)">Chargement…</p>`;
+  let friends = [];
+  try {
+    await sbLoadProfile();
+    if (sbProfile) friends = await sbLoadFriends();
+  } catch (e) {
+    el.innerHTML = `${FR_HEAD}<div class="page-head"><h1>👥 Amis</h1></div><div class="empty"><p>Impossible de joindre le serveur (${esc(e.message || 'hors-ligne')}). Réessayez avec Internet. Si le message parle d'une table introuvable, le script « supabase-communaute.sql » n'a pas encore été exécuté.</p></div>`;
+    return;
+  }
+  if (!sbProfile) {
+    el.innerHTML = `${FR_HEAD}<div class="page-head"><h1>👥 Amis</h1><span class="sub">Créez votre profil</span></div>
+      <div class="panel"><h3>Choisissez un pseudo</h3>
+        <p class="hint" style="color:var(--muted)">C'est le nom que vos amis taperont pour vous retrouver. 3 à 20 caractères : lettres, chiffres, _ . -<br>Votre profil reste <b>invisible</b> tant que vous ne l'avez pas rendu visible.</p>
+        <input class="input" id="frPseudo" placeholder="Votre pseudo" autocapitalize="off" autocomplete="off">
+        <div class="row" style="margin-top:8px"><button class="btn primary" id="frCreate">Créer mon profil</button> <span id="frStatus" class="sub"></span></div>
+      </div>`;
+    el.querySelector('#frCreate').onclick = async (ev) => {
+      const b = ev.currentTarget, st = el.querySelector('#frStatus'); b.disabled = true; st.textContent = '…';
+      try { await sbCreateProfile(el.querySelector('#frPseudo').value.trim()); render(); }
+      catch (e) { st.textContent = '❌ ' + (e.message || 'Échec'); b.disabled = false; }
+    };
+    return;
+  }
+
+  const feed = [];
+  for (const f of friends) for (const g of ((f.snapshot && f.snapshot.recent) || [])) feed.push({ f, g });
+  feed.sort((a, b) => String(b.g.at).localeCompare(String(a.g.at)));
+  const lastOf = (f) => { const g = f.snapshot && f.snapshot.recent && f.snapshot.recent[0]; return g ? `${activityText(g)} · ${fmtAgo(g.at)}` : (f.snapshot ? 'Rien de partagé pour l\'instant' : 'Profil pas encore publié'); };
+  const pub = sbProfile.is_public;
+  el.innerHTML = `${FR_HEAD}<div class="page-head"><h1>👥 Amis</h1></div>
+    <div class="panel">
+      <div style="display:flex;align-items:center;gap:14px">
+        <label style="cursor:pointer;position:relative">${avatarHtml(sbProfile.avatar, sbProfile.pseudo, 'lg')}<input type="file" id="frAvatar" accept="image/*" hidden><span class="sub" style="display:block;text-align:center;font-size:11px">Changer</span></label>
+        <div><b style="font-size:18px">${esc(sbProfile.pseudo)}</b><div class="hint" style="color:var(--muted)">${pub ? '🟢 Profil visible par ceux qui vous suivent' : '🔒 Profil invisible'}</div></div>
+      </div>
+      <label class="check-row" style="display:flex;gap:10px;margin-top:12px;cursor:pointer"><input type="checkbox" id="frPublic" ${pub ? 'checked' : ''}><span>Rendre mon profil visible (les autres me trouvent avec mon pseudo)</span></label>
+      ${pub ? `<div style="margin-left:26px">
+        <label class="check-row"><input type="checkbox" data-share="watching" ${shareOpt('watching') ? 'checked' : ''}> Mes séries en cours</label>
+        <label class="check-row"><input type="checkbox" data-share="recent" ${shareOpt('recent') ? 'checked' : ''}> Mon activité récente</label>
+        <label class="check-row"><input type="checkbox" data-share="favs" ${shareOpt('favs') ? 'checked' : ''}> Mes favoris</label>
+        <p class="hint" style="color:var(--muted)">Mis à jour à chaque ouverture de l'app (au plus une fois par heure). Dernière publication : <b>${esc(fmtAgo(sbProfile.updated_at))}</b>.</p>
+        <button class="btn sm" id="frPublish">Publier maintenant</button>
+      </div>` : ''}
+      <span id="frStatus" class="sub"></span>
+    </div>
+    <div class="panel"><h3>Ajouter un ami</h3>
+      <div class="row" style="display:flex;gap:10px"><input class="input" id="frAdd" placeholder="Son pseudo" autocapitalize="off" autocomplete="off" style="flex:1"><button class="btn primary" id="frAddBtn">Suivre</button></div>
+      <span id="frAddStatus" class="sub"></span>
+    </div>
+    <div class="panel"><h3>Mes amis <span style="color:var(--muted);font-weight:400">· ${friends.length}</span></h3>
+      ${friends.length ? friends.map(f => `<a class="friend-row" href="#/friend/${esc(f.id)}">${avatarHtml(f.avatar, f.pseudo)}<span><b>${esc(f.pseudo)}</b><small>${esc(lastOf(f))}</small></span></a>`).join('')
+        : '<p class="hint" style="color:var(--muted)">Personne pour l\'instant. Demandez son pseudo à un ami (il doit avoir rendu son profil visible).</p>'}
+    </div>
+    ${feed.length ? `<div class="panel"><h3>Activité des amis</h3>${feed.slice(0, 20).map(x => `<div class="feed-line"><b>${esc(x.f.pseudo)}</b> ${esc(activityText(x.g))} <span class="sub">· ${esc(fmtAgo(x.g.at))}</span></div>`).join('')}</div>` : ''}`;
+
+  const st = el.querySelector('#frStatus');
+  const guard = (fn) => async (ev) => {
+    const t = ev.currentTarget; if (sbBusy) return; sbBusy = true; if (t.disabled !== undefined) t.disabled = true;
+    try { await fn(t); } catch (e) { st.textContent = '❌ ' + (e.message || 'Échec'); if (t.disabled !== undefined) t.disabled = false; }
+    sbBusy = false;
+  };
+  el.querySelector('#frAvatar').onchange = async (ev) => {
+    const file = ev.target.files[0]; if (!file || sbBusy) return; sbBusy = true; st.textContent = 'Envoi de la photo…';
+    try { const data = await avatarFromFile(file); await sbPublishProfile(true, { avatar: data }); render(); }
+    catch (e) { st.textContent = '❌ ' + (e.message || 'Échec'); }
+    sbBusy = false;
+  };
+  el.querySelector('#frPublic').onchange = guard(async (t) => { await sbPublishProfile(true, { is_public: t.checked }); render(); });
+  el.querySelectorAll('[data-share]').forEach(cb => cb.onchange = guard(async (t) => {
+    userState.share = Object.assign({}, userState.share, { [t.dataset.share]: t.checked }); scheduleSaveState();
+    await sbPublishProfile(true); t.disabled = false; st.textContent = '✅ Mis à jour';
+  }));
+  const pb = el.querySelector('#frPublish');
+  if (pb) pb.onclick = guard(async () => { await sbPublishProfile(true); render(); toast('Profil publié'); });
+  el.querySelector('#frAddBtn').onclick = guard(async () => {
+    const add = el.querySelector('#frAddStatus'); add.textContent = '…';
+    try { const p = await sbFollowByPseudo(el.querySelector('#frAdd').value.trim()); toast('Vous suivez ' + p); render(); }
+    catch (e) { add.textContent = '❌ ' + (e.message || 'Échec'); el.querySelector('#frAddBtn').disabled = false; }
+  });
+});
+
+route('friend', async (el, rest) => {
+  const id = decodeURIComponent(rest[0] || '');
+  const back = `<a class="btn ghost sm" href="#/friends">← Amis</a>`;
+  if (!sbSession || !/^[0-9a-f-]{36}$/.test(id)) { el.innerHTML = `${back}<div class="empty">Profil introuvable.</div>`; return; }
+  el.innerHTML = `${back}<p class="hint" style="color:var(--muted)">Chargement…</p>`;
+  let p;
+  try { const rows = await sbApi('profiles?id=eq.' + id + '&select=id,pseudo,avatar,snapshot,updated_at'); p = rows && rows[0]; }
+  catch (e) { el.innerHTML = `${back}<div class="empty"><p>Impossible de charger (${esc(e.message || 'hors-ligne')}).</p></div>`; return; }
+  if (!p) { el.innerHTML = `${back}<div class="empty">Ce profil n'est plus visible.</div>`; return; }
+  const s = p.snapshot || {};
+  const tile = (it, extra) => {
+    const po = safePoster(it.p);
+    return `<div class="fr-item">${po ? `<img loading="lazy" src="${IMG(po)}" alt="">` : `<div class="fr-noimg">${esc(it.n)}</div>`}<small>${esc(it.n)}</small>${extra || ''}</div>`;
+  };
+  const row = (title, items, extra) => items && items.length ? `<div class="panel"><h3>${title}</h3><div class="fr-grid">${items.map(it => tile(it, extra ? extra(it) : '')).join('')}</div></div>` : '';
+  const st = s.stats || {};
+  el.innerHTML = `${back}
+    <div class="page-head" style="display:flex;align-items:center;gap:14px">${avatarHtml(p.avatar, p.pseudo, 'lg')}<div><h1 style="margin:0">${esc(p.pseudo)}</h1><span class="sub">Mis à jour ${esc(fmtAgo(p.updated_at))}</span></div></div>
+    ${s.stats ? `<div class="stat-grid">
+      <div class="stat-card"><div class="k">Épisodes vus</div><div class="v">${esc(st.eps)}</div></div>
+      <div class="stat-card"><div class="k">Séries commencées</div><div class="v">${esc(st.shows)}</div></div>
+      <div class="stat-card"><div class="k">Films vus</div><div class="v">${esc(st.movies)}</div></div></div>` : '<p class="hint" style="color:var(--muted)">Rien n\'a encore été publié.</p>'}
+    ${row('▶️ En cours', s.watching, (it) => it.t ? `<small class="sub">${esc(it.d)}/${esc(it.t)} ép.</small>` : '')}
+    ${s.recent && s.recent.length ? `<div class="panel"><h3>🕒 Activité récente</h3>${s.recent.map(g => `<div class="feed-line">${esc(activityText(g))} <span class="sub">· ${esc(fmtAgo(g.at))}</span></div>`).join('')}</div>` : ''}
+    ${row('❤️ Séries favorites', s.favShows)}
+    ${row('🎬 Films favoris', s.favMovies)}
+    <p style="margin-top:14px"><button class="btn ghost sm" id="frUnfollow">Ne plus suivre ${esc(p.pseudo)}</button></p>`;
+  el.querySelector('#frUnfollow').onclick = async (ev) => {
+    if (!confirm('Ne plus suivre ' + p.pseudo + ' ?')) return;
+    ev.currentTarget.disabled = true;
+    try { await sbApi('follows?follower=eq.' + sbSession.uid + '&followed=eq.' + id, { method: 'DELETE', headers: { Prefer: 'return=minimal' } }); location.hash = '#/friends'; }
+    catch (e) { toast('Échec : ' + (e.message || '')); ev.currentTarget.disabled = false; }
+  };
+});
+
 function exportData(fileName) {
   const backup = buildBackup();
   const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
@@ -4507,8 +4771,9 @@ function applyTheme() {
   render();
   maybeShowChangelogPopup();
   maybeWeeklyBackup();
+  setTimeout(sbMaybePublish, 8000);
   setTimeout(refreshMovieMatches, 6000);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') maybeWeeklyBackup(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { maybeWeeklyBackup(); sbMaybePublish(); } });
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
