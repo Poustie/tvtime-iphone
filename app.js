@@ -11,6 +11,13 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 35, date: '27 octobre 2026', title: 'Boutons des affiches plus sûrs', items: [
+    'Sur téléphone, les boutons d’une affiche (arrêter, épingler, marquer vu, revisionner, supprimer) n’apparaissent plus qu’après un appui long sur l’affiche, et ne se déclenchent plus par erreur en touchant un coin. Valable pour les séries et les films.',
+  ] },
+  { id: 34, date: '27 octobre 2026', title: 'Glissement plus fiable', items: [
+    'Le glissement entre les pages démarre maintenant de façon plus sûre et suit mieux le doigt dès les premiers millimètres (il pouvait parfois s\'interrompre ou sauter).',
+    'Les pages voisines sont préparées dès que vous posez le doigt si elles ne sont pas déjà prêtes.',
+  ] },
   { id: 33, date: '27 octobre 2026', title: 'Affiche en grand', items: [
     'Sur la fiche d\'une série ou d\'un film (y compris l\'aperçu avant ajout), touchez l\'affiche pour la voir en grand. Touchez l\'écran, la croix ou Échap pour fermer.',
   ] },
@@ -2242,7 +2249,7 @@ function _lpCancel() { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; 
 document.addEventListener('touchstart', (e) => {
   const t = e.target;
   if (t.closest && t.closest('button')) return;          // let action buttons work
-  const card = t.closest && t.closest('.show-card:not(.movie-card)');
+  const card = t.closest && t.closest('.show-card');
   if (!card) { clearCardActions(); return; }              // tap outside -> hide actions
   _lpFired = false;
   _lpCancel();
@@ -2305,7 +2312,7 @@ function schedulePanes(delay = 400) {
   _paneTimer = setTimeout(async () => {
     for (const h of want) {
       if (tok !== _paneTok) return;
-      if (_sw || _swBusy) { schedulePanes(delay); return; }
+      if ((_sw && _sw.locked) || _swBusy) { schedulePanes(delay); return; } // pas pendant un glissement actif
       if (_panes[h] && _panes[h].el._ver === _dataVer) continue;
       await prerenderPane(h, tok);
     }
@@ -2397,6 +2404,9 @@ document.addEventListener('touchstart', (e) => {
   const nb = swipeNeighbors(); if (!nb) return;
   const x = e.touches[0].clientX, y = e.touches[0].clientY;
   _sw = { x0: x, y0: y, nb, locked: false, side: null, target: null, pane: null, dx: 0, lastX: x, lastT: performance.now(), vx: 0 };
+  // Une page voisine manque ou est périmée : on la prépare tout de suite (pas dans 400 ms).
+  const stale = (h) => h && !(_panes[h] && _panes[h].el._ver === _dataVer);
+  if (stale(nb.prev) || stale(nb.next)) schedulePanes(0);
 }, { passive: true });
 document.addEventListener('touchmove', (e) => {
   const s = _sw; if (!s) return;
@@ -2406,6 +2416,9 @@ document.addEventListener('touchmove', (e) => {
     if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
     if (Math.abs(dx) < Math.abs(dy) * 1.3) { _sw = null; return; } // vertical scroll: let the page scroll
     s.locked = true;
+    s.x0 = x; // la page part de 0 et suit le doigt, sans sauter des 10 px du seuil
+    s.lastX = x; s.lastT = performance.now();
+    return;
   }
   if (e.cancelable) e.preventDefault();
   const now = performance.now(), dt = now - s.lastT;
