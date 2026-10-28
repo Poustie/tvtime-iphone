@@ -650,3 +650,8 @@ html.amoled .bottom-nav { background: rgba(0,0,0,.94); }
 .fr-item img, .fr-noimg { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 8px; background: var(--bg3); display: block; }
 .fr-noimg { display: flex; align-items: center; justify-content: center; text-align: center; font-size: 12px; padding: 6px; color: var(--muted); }
 .fr-item small { display: block; font-size: 12px; margin-top: 4px; line-height: 1.2; }
+
+/* Bouton « Mon compte » (avatar) en haut à droite des pages-onglets */
+.page-head:has(> .acct-btn) { position: relative; padding-right: 48px; min-height: 36px; }
+.acct-btn { position: absolute; right: 0; top: 0; display: block; line-height: 0; text-decoration: none; }
+.acct-btn .avatar { width: 36px; height: 36px; font-size: 16px; }

@@ -11,13 +11,18 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 38, date: '28 octobre 2026', title: 'Nouvelle organisation', items: [
+    'L’onglet Profil devient l’onglet Amis (fil d’activité, ajouter et retrouver vos amis).',
+    'Votre compte (profil, pseudo, photo, connexion, sauvegarde en ligne, bibliothèque, statistiques, listes, réglages) s’ouvre en touchant votre avatar, en haut à droite des pages Séries, Films, Explorer et Amis.',
+    'Le pseudo remplace l’ancien champ « Mon nom » des Réglages.',
+  ] },
   { id: 37, date: '28 octobre 2026', title: 'Amis', items: [
-    'Nouveau : Profil → Amis. Choisissez un pseudo et une photo de profil, puis rendez votre profil visible si vous le souhaitez (il est invisible par défaut).',
+    'Nouveau : l’onglet Amis. Choisissez un pseudo et une photo de profil, puis rendez votre profil visible si vous le souhaitez (il est invisible par défaut).',
     'Vos amis peuvent vous suivre en tapant votre pseudo, et vous voyez leurs séries en cours, leur activité récente et leurs favoris. Vous choisissez ce qui est partagé.',
-    'Il faut être connecté (Réglages → Sauvegarde en ligne). Le profil est mis à jour à chaque ouverture de l\'application.',
+    'Il faut être connecté (Mon compte). Le profil est mis à jour à chaque ouverture de l\'application.',
   ] },
   { id: 36, date: '28 octobre 2026', title: 'Sauvegarde en ligne', items: [
-    'Nouveau dans Réglages → « Sauvegarde en ligne » : connectez-vous avec votre e-mail (un lien vous est envoyé, pas de mot de passe) et votre historique est copié sur Internet, en privé.',
+    'Nouveau dans Mon compte → « Sauvegarde en ligne » : connectez-vous avec votre e-mail (un lien vous est envoyé, pas de mot de passe) et votre historique est copié sur Internet, en privé.',
     'Une seule sauvegarde, remplacée à chaque fois : automatiquement une fois par semaine quand vous ouvrez l\'application, ou à la demande avec « Sauvegarder maintenant ».',
     'Le bouton « Restaurer » ramène vos données sur cet appareil ou sur un nouveau téléphone. L\'application reste utilisable sans connexion.',
   ] },
@@ -1138,7 +1143,7 @@ document.addEventListener('click', (ev) => {
   const c = ev.target.closest && ev.target.closest('.cast-item[data-pname]');
   if (c) openPerson(c.dataset.pid, c.dataset.pname);
 });
-const BACK_LABELS = { home: 'Séries', library: 'Bibliothèque', upnext: 'À suivre', explore: 'Explorer', movies: 'Films', lists: 'Listes', stats: 'Statistiques', profile: 'Profil', settings: 'Réglages', changelog: 'Notes de version', episode: 'Épisode', preview: 'Aperçu' };
+const BACK_LABELS = { home: 'Séries', library: 'Bibliothèque', upnext: 'À suivre', explore: 'Explorer', movies: 'Films', lists: 'Listes', stats: 'Statistiques', profile: 'Mon compte', friends: 'Amis', settings: 'Réglages', changelog: 'Notes de version', episode: 'Épisode', preview: 'Aperçu' };
 // Label of the page « ← Retour » leads to (fallback = page used when there is no history).
 function backLabel(fallback) {
   const prev = navStack.length > 1 ? navStack[navStack.length - 2] : fallback;
@@ -1190,8 +1195,8 @@ async function render() {
   const [name, ...rest] = currentRoute().split('/');
   trackNav(location.hash || '#/home', name);
   if (name !== 'show' && name !== 'episode') { lastShowKey = null; showViewRestore = null; } // re-opening a show counts as a fresh visit
-  // Library / stats / lists / settings live under the "Profil" tab.
-  const navName = ['library', 'stats', 'lists', 'settings', 'changelog'].includes(name) ? 'profile' : (name === 'preview' ? 'explore' : name);
+  // « Mon compte » (profil, bibliothèque, stats, listes, réglages…) n'est plus un onglet : il s'ouvre par l'avatar en haut à droite.
+  const navName = name === 'preview' ? 'explore' : (name === 'friend' ? 'friends' : name);
   document.querySelectorAll('.bottom-nav a').forEach(a => a.classList.toggle('active', a.dataset.route === navName));
   // Direction of the slide, only between the four main categories.
   const newTop = SWIPE_ROUTES.includes(name) ? name : null;
@@ -1558,7 +1563,7 @@ route('home', async (el) => {
   const shows = Array.from(MODEL.shows.values());
   const archivedCount = shows.filter(s => s.archived).length;
   el.innerHTML = `
-    <div class="page-head"><h1>Séries</h1>
+    <div class="page-head"><h1>Séries</h1>${acctBtn()}
       <div class="spacer"></div>
       ${seriesTab === 'avoir' ? `<button class="btn sm ghost ${homeEditOrder ? 'primary' : ''}" id="btnReorder">${homeEditOrder ? '✓ Terminé' : '↕ Réorganiser'}</button>
       ${archivedCount ? `<button class="btn ghost sm" id="btnArchived">⏹ Arrêtées (${archivedCount})</button>` : ''}` : ''}
@@ -1797,7 +1802,7 @@ route('movies', async (el) => {
 
   el.innerHTML = `
     <div class="page-head">
-      <h1>Films</h1>
+      <h1>Films</h1>${acctBtn()}
       <span class="sub">${toWatch.length} à voir · ${watched.length} vus</span>
       <div class="spacer"></div>
       <div class="sort-chips" id="movSort"></div>
@@ -2076,6 +2081,7 @@ route('library', async (el) => {
   const shows = Array.from(MODEL.shows.values());
   const allMovies = (DATA.movies || []).concat(userState.customMovies || []);
   el.innerHTML = `
+    ${backBtn('#/profile')}
     <div class="page-head">
       <h1>Bibliothèque</h1>
       <span class="sub" id="libCount"></span>
@@ -2285,7 +2291,7 @@ document.addEventListener('click', (e) => {
 // The pages on each side (neighbouring categories, or previous/next episode) are rendered
 // in the background into hidden .app-pane elements. While swiping, the current page and the
 // incoming pane move together; on release the pane BECOMES the page (no re-render).
-const SWIPE_ROUTES = ['home', 'movies', 'explore', 'profile'];
+const SWIPE_ROUTES = ['home', 'movies', 'explore', 'friends'];
 const _panes = {};           // hash -> { el, y }
 let _paneTok = 0, _paneTimer = null;
 let _suppressRenderHash = null;
@@ -3381,7 +3387,7 @@ async function exploreRowHits(row) {
 }
 route('explore', async (el) => {
   el.innerHTML = `
-    <div class="page-head"><h1>🧭 Explorer</h1><span class="sub">Rechercher de nouvelles séries et films à ajouter</span></div>
+    <div class="page-head"><h1>🧭 Explorer</h1>${acctBtn()}<span class="sub">Rechercher de nouvelles séries et films à ajouter</span></div>
     ${hasKey() ? `<div class="explore-search"><input class="input" id="expQ" placeholder="Rechercher une série ou un film…" autocomplete="off"></div>
     <div id="expResults" class="explore-results"></div>`
       : needKeyHtml("L'exploration a besoin d'une clé TMDB pour rechercher des séries et des films.")}`;
@@ -3643,7 +3649,10 @@ route('profile', async (el) => {
       ${count ? `<div class="grid" id="${gridId}">${inner}</div>` : `<p class="hint" style="color:var(--muted)">Aucun favori pour l'instant. Ouvrez une œuvre puis touchez « Favori ».</p>`}
     </div>`;
   el.innerHTML = `
-    <div class="page-head"><h1>Profil</h1><span class="sub">Bonjour ${esc(userDisplayName())} 👋</span></div>
+    ${backBtn('#/home')}
+    <div class="page-head"><h1>Mon compte</h1><span class="sub">Bonjour ${esc(userDisplayName())} 👋</span></div>
+    ${sbSession ? '<div id="acctProfile"></div>' : ''}
+    ${sbPanelHtml()}
     <div class="stat-grid">
       <div class="stat-card"><div class="k">Épisodes vus</div><div class="v">${seenCount}</div></div>
       <div class="stat-card"><div class="k">Séries suivies</div><div class="v">${following}</div></div>
@@ -3653,7 +3662,6 @@ route('profile', async (el) => {
     <div class="profile-menu" style="margin-bottom:22px">
       <a class="menu-card" href="#/library"><span class="ic">📚</span><b>Bibliothèque</b><small>Toutes vos œuvres — séries &amp; films</small></a>
       <a class="menu-card" href="#/stats"><span class="ic">📊</span><b>Statistiques</b><small>Séries &amp; films</small></a>
-      <a class="menu-card" href="#/friends"><span class="ic">👥</span><b>Amis</b><small>Pseudo, photo, activité de vos amis</small></a>
       <a class="menu-card" href="#/lists"><span class="ic">📃</span><b>Listes</b><small>Créez et modifiez vos listes</small></a>
       <a class="menu-card" href="#/settings"><span class="ic">⚙️</span><b>Réglages</b><small>Clé TMDB, synchronisation, sauvegarde</small></a>
       <a class="menu-card" href="#/changelog"><span class="ic">🆕</span><b>Notes de version</b><small>Les nouveautés de chaque mise à jour</small></a>
@@ -3661,6 +3669,9 @@ route('profile', async (el) => {
     ${favSection('Séries favorites', '❤️', favSeries.length, 'favSeriesGrid', favSeries.map(s => cardHtml(s)).join(''))}
     ${favSection('Films favoris', '🎬', favMovies.length, 'favMoviesGrid', favMovies.map(m => movieCardHtml(m)).join(''))}`;
 
+  sbWirePanel(el);
+  const ap = el.querySelector('#acctProfile');
+  if (ap) fillAccountProfile(ap);
   const sg = el.querySelector('#favSeriesGrid');
   if (sg) {
     sg.querySelectorAll('.show-card').forEach(c => c.onclick = () => openShow(c.dataset.key));
@@ -3681,7 +3692,7 @@ route('changelog', async (el) => {
       <ul class="cl-list">${e.items.map(it => `<li>${esc(it)}</li>`).join('')}</ul>
     </div>`).join('');
   el.innerHTML = `
-    <a class="btn ghost sm" href="#/profile">← Profil</a>
+    ${backBtn('#/profile')}
     <div class="page-head"><h1>🆕 Notes de version</h1><span class="sub">L'historique des nouveautés de l'application</span></div>
     ${entries}`;
 });
@@ -3750,6 +3761,7 @@ route('stats', async (el) => {
   const movYears = Object.keys(movByYear).sort();
 
   el.innerHTML = `
+    ${backBtn('#/profile')}
     <div class="page-head"><h1>Statistiques</h1><span class="sub">Bonjour ${esc(userDisplayName())} 👋</span></div>
     <div class="page-head" style="margin-top:6px"><h1>📺 Séries</h1><span class="sub">Vos statistiques séries</span></div>
     <div class="stat-grid">
@@ -3819,6 +3831,7 @@ route('lists', async (el) => {
   function draw() {
     const lists = getUserLists();
     el.innerHTML = `
+      ${backBtn('#/profile')}
       <div class="page-head"><h1>Listes</h1><span class="sub">${lists.length} liste(s)</span>
         <div class="spacer"></div><button class="btn primary" id="newList">＋ Nouvelle liste</button></div>
       ${lists.length ? '' : `<div class="empty"><div class="big">📃</div>Aucune liste. Créez-en une, puis ajoutez des séries et des films depuis leur fiche (« Ajouter à une liste »).</div>`}
@@ -3903,18 +3916,8 @@ route('lists', async (el) => {
 //////////////////////// Settings ////////////////////////
 route('settings', async (el) => {
   el.innerHTML = `
+    ${backBtn('#/profile')}
     <div class="page-head"><h1>Réglages</h1></div>
-    <div class="panel">
-      <div class="settings-field">
-        <label>Mon nom</label>
-        <input class="input" id="profileName" placeholder="Votre nom" value="${esc(userState.profileName || '')}">
-        <div class="hint">Le nom affiché dans « Bonjour … » (Profil et Statistiques). Pratique si vous partagez l'application.</div>
-      </div>
-      <div class="row" style="display:flex;gap:10px">
-        <button class="btn primary" id="saveName">Enregistrer</button>
-        <span id="nameStatus" class="sub" style="align-self:center"></span>
-      </div>
-    </div>
     <div class="panel">
       <h3>Affichage</h3>
       <label class="check-row" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
@@ -3941,10 +3944,8 @@ route('settings', async (el) => {
       <div class="row" style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn primary" id="syncAll">Synchroniser toutes mes œuvres</button><span id="syncProg" class="sub" style="align-self:center"></span></div>
     </div>
 
-    ${sbPanelHtml()}
-
     <div class="panel">
-      <h3>Sauvegarde</h3>
+      <h3>Sauvegarde dans un fichier</h3>
       <p class="hint" style="color:var(--muted)">${serverAvailable
         ? 'Vos ajouts (épisodes vus, notes, réactions) sont enregistrés dans <b>userdata.json</b> à côté de l\'application.'
         : 'Mode autonome : vos ajouts sont enregistrés <b>sur cet appareil</b> (stockage du navigateur). Pensez à exporter une sauvegarde de temps en temps.'}<br>
@@ -3971,7 +3972,6 @@ route('settings', async (el) => {
       <p style="margin-top:10px"><a class="btn ghost sm" href="#/changelog">🆕 Notes de version</a></p>
     </div>`;
 
-  el.querySelector('#saveName').onclick = () => { userState.profileName = el.querySelector('#profileName').value.trim(); scheduleSaveState(); el.querySelector('#nameStatus').textContent = '✅ Enregistré'; toast('Nom enregistré'); };
   el.querySelector('#amoledToggle').onchange = (e) => { userState.amoled = e.target.checked; scheduleSaveState(); applyTheme(); };
   el.querySelector('#saveKey').onclick = () => { userState.tmdbKey = el.querySelector('#tmdbKey').value.trim(); scheduleSaveState(); updateSyncStatus(); toast('Clé enregistrée'); };
   el.querySelector('#testKey').onclick = async () => {
@@ -3986,7 +3986,6 @@ route('settings', async (el) => {
   if (wb) wb.onchange = (e) => { userState.weeklyBackup = e.target.checked; scheduleSaveState(); };
   el.querySelector('#shareBtn').onclick = exportSharedList;
   el.querySelector('#importFile').onchange = importData;
-  sbWirePanel(el);
 });
 
 async function syncEverything(progEl) {
@@ -4055,8 +4054,10 @@ let sbSession = null; // { at, rt, exp, uid, email } — gardé hors de userStat
 try { sbSession = JSON.parse(localStorage.getItem(SB_SESSION_KEY) || 'null'); } catch {}
 let sbPendingEmail = null; // e-mail en attente de saisie du code
 let sbBusy = false;
+let sbProfile = null; // mon profil (communauté) : { pseudo, is_public, avatar, updated_at } — null = pas encore créé
 function sbStoreSession(s) {
   sbSession = s;
+  if (!s) { sbProfile = null; try { localStorage.removeItem('tvtime-acct'); } catch {} }
   try { s ? localStorage.setItem(SB_SESSION_KEY, JSON.stringify(s)) : localStorage.removeItem(SB_SESSION_KEY); } catch {}
 }
 function sbSessionFrom(j) {
@@ -4114,7 +4115,7 @@ async function sbSignInWithLink(text) {
   const s = sbSessionFromHash(params);
   if (s && s.uid) { sbStoreSession(s); msg = 'Connecté : ' + (s.email || ''); }
   else if (params.get('error_description')) msg = 'Lien invalide ou expiré : demandez-en un nouveau';
-  history.replaceState(null, '', location.pathname + location.search + '#/settings');
+  history.replaceState(null, '', location.pathname + location.search + '#/profile');
   if (msg) setTimeout(() => toast(msg), 1200);
 })();
 // Jeton valide (rafraîchi si besoin). Renvoie null si déconnecté ; lève une erreur si hors-ligne.
@@ -4206,7 +4207,6 @@ function sbMaybeAutoBackup() {
 //////////////////////// Communauté (profils & amis, via Supabase) ////////////////////////
 // Tables profiles / follows (voir supabase-communaute.sql). Un profil n'est lisible par les autres que si
 // is_public = true ; on n'y publie qu'un petit résumé (jamais la sauvegarde complète).
-let sbProfile = null; // mon profil : { pseudo, is_public, avatar, updated_at } — null = pas encore créé
 let _sbPubAt = 0;
 async function sbApi(path, { method = 'GET', json, headers = {} } = {}) {
   const token = await sbToken();
@@ -4338,47 +4338,47 @@ async function sbFollowByPseudo(pseudo) {
   return hit.pseudo;
 }
 
-const FR_HEAD = `<a class="btn ghost sm" href="#/profile">← Profil</a>`;
-route('friends', async (el) => {
-  if (!sbSession) {
-    el.innerHTML = `${FR_HEAD}<div class="page-head"><h1>👥 Amis</h1></div>
-      <div class="empty"><div class="big">👥</div><p>Pour retrouver vos amis, connectez-vous d'abord avec votre e-mail (Réglages → Sauvegarde en ligne).</p><a class="btn primary" href="#/settings">Ouvrir les Réglages</a></div>`;
-    return;
-  }
-  el.innerHTML = `${FR_HEAD}<div class="page-head"><h1>👥 Amis</h1></div><p class="hint" style="color:var(--muted)">Chargement…</p>`;
-  let friends = [];
-  try {
-    await sbLoadProfile();
-    if (sbProfile) friends = await sbLoadFriends();
-  } catch (e) {
-    el.innerHTML = `${FR_HEAD}<div class="page-head"><h1>👥 Amis</h1></div><div class="empty"><p>Impossible de joindre le serveur (${esc(e.message || 'hors-ligne')}). Réessayez avec Internet. Si le message parle d'une table introuvable, le script « supabase-communaute.sql » n'a pas encore été exécuté.</p></div>`;
+// Bouton « Mon compte » (avatar) en haut à droite des 4 onglets : mène au profil, aux réglages et à la connexion.
+function acctBtn() {
+  let c = null;
+  try { c = JSON.parse(localStorage.getItem('tvtime-acct') || 'null'); } catch {}
+  const inner = sbSession && c ? avatarHtml(c.avatar, c.pseudo) : '<span class="avatar">👤</span>';
+  return `<a class="acct-btn" href="#/profile" aria-label="Mon compte">${inner}</a>`;
+}
+// Garde le pseudo et la photo sur l'appareil (bouton Mon compte, « Bonjour … » même hors-ligne).
+function sbCacheAccount() {
+  if (!sbProfile) return;
+  try { localStorage.setItem('tvtime-acct', JSON.stringify({ pseudo: sbProfile.pseudo, avatar: safeAvatar(sbProfile.avatar) })); } catch {}
+  if (userState.profileName !== sbProfile.pseudo) { userState.profileName = sbProfile.pseudo; scheduleSaveState(); }
+  document.querySelectorAll('.acct-btn').forEach(b => { b.innerHTML = avatarHtml(sbProfile.avatar, sbProfile.pseudo); });
+}
+
+// Panneau « Mon profil » (page Mon compte) : créer le pseudo, photo, visibilité, ce qui est partagé.
+async function fillAccountProfile(box) {
+  box.innerHTML = '<div class="panel"><h3>Mon profil</h3><p class="hint" style="color:var(--muted)">Chargement…</p></div>';
+  try { await sbLoadProfile(); }
+  catch (e) {
+    box.innerHTML = `<div class="panel"><h3>Mon profil</h3><p class="hint" style="color:var(--muted)">Indisponible pour l'instant (${esc(e.message || 'hors-ligne')}). Si le message parle d'une table introuvable, le script « supabase-communaute.sql » n'a pas encore été exécuté dans Supabase.</p></div>`;
     return;
   }
   if (!sbProfile) {
-    el.innerHTML = `${FR_HEAD}<div class="page-head"><h1>👥 Amis</h1><span class="sub">Créez votre profil</span></div>
-      <div class="panel"><h3>Choisissez un pseudo</h3>
-        <p class="hint" style="color:var(--muted)">C'est le nom que vos amis taperont pour vous retrouver. 3 à 20 caractères : lettres, chiffres, _ . -<br>Votre profil reste <b>invisible</b> tant que vous ne l'avez pas rendu visible.</p>
-        <input class="input" id="frPseudo" placeholder="Votre pseudo" autocapitalize="off" autocomplete="off">
-        <div class="row" style="margin-top:8px"><button class="btn primary" id="frCreate">Créer mon profil</button> <span id="frStatus" class="sub"></span></div>
-      </div>`;
-    el.querySelector('#frCreate').onclick = async (ev) => {
-      const b = ev.currentTarget, st = el.querySelector('#frStatus'); b.disabled = true; st.textContent = '…';
-      try { await sbCreateProfile(el.querySelector('#frPseudo').value.trim()); render(); }
+    box.innerHTML = `<div class="panel"><h3>Créer mon profil</h3>
+      <p class="hint" style="color:var(--muted)">Choisissez un pseudo : c'est le nom que vos amis taperont pour vous retrouver. 3 à 20 caractères : lettres, chiffres, _ . -<br>Votre profil reste <b>invisible</b> tant que vous ne l'avez pas rendu visible.</p>
+      <input class="input" id="frPseudo" placeholder="Votre pseudo" autocapitalize="off" autocomplete="off">
+      <div class="row" style="margin-top:8px"><button class="btn primary" id="frCreate">Créer mon profil</button> <span id="frStatus" class="sub"></span></div></div>`;
+    box.querySelector('#frCreate').onclick = async (ev) => {
+      const b = ev.currentTarget, st = box.querySelector('#frStatus'); b.disabled = true; st.textContent = '…';
+      try { await sbCreateProfile(box.querySelector('#frPseudo').value.trim()); sbCacheAccount(); render(); }
       catch (e) { st.textContent = '❌ ' + (e.message || 'Échec'); b.disabled = false; }
     };
     return;
   }
-
-  const feed = [];
-  for (const f of friends) for (const g of ((f.snapshot && f.snapshot.recent) || [])) feed.push({ f, g });
-  feed.sort((a, b) => String(b.g.at).localeCompare(String(a.g.at)));
-  const lastOf = (f) => { const g = f.snapshot && f.snapshot.recent && f.snapshot.recent[0]; return g ? `${activityText(g)} · ${fmtAgo(g.at)}` : (f.snapshot ? 'Rien de partagé pour l\'instant' : 'Profil pas encore publié'); };
+  sbCacheAccount();
   const pub = sbProfile.is_public;
-  el.innerHTML = `${FR_HEAD}<div class="page-head"><h1>👥 Amis</h1></div>
-    <div class="panel">
+  box.innerHTML = `<div class="panel"><h3>Mon profil</h3>
       <div style="display:flex;align-items:center;gap:14px">
-        <label style="cursor:pointer;position:relative">${avatarHtml(sbProfile.avatar, sbProfile.pseudo, 'lg')}<input type="file" id="frAvatar" accept="image/*" hidden><span class="sub" style="display:block;text-align:center;font-size:11px">Changer</span></label>
-        <div><b style="font-size:18px">${esc(sbProfile.pseudo)}</b><div class="hint" style="color:var(--muted)">${pub ? '🟢 Profil visible par ceux qui vous suivent' : '🔒 Profil invisible'}</div></div>
+        <label style="cursor:pointer">${avatarHtml(sbProfile.avatar, sbProfile.pseudo, 'lg')}<input type="file" id="frAvatar" accept="image/*" hidden><span class="sub" style="display:block;text-align:center;font-size:11px">Changer la photo</span></label>
+        <div><b style="font-size:18px">${esc(sbProfile.pseudo)}</b><div class="hint" style="color:var(--muted)">${pub ? '🟢 Visible par ceux qui vous suivent' : '🔒 Invisible'}</div></div>
       </div>
       <label class="check-row" style="display:flex;gap:10px;margin-top:12px;cursor:pointer"><input type="checkbox" id="frPublic" ${pub ? 'checked' : ''}><span>Rendre mon profil visible (les autres me trouvent avec mon pseudo)</span></label>
       ${pub ? `<div style="margin-left:26px">
@@ -4388,8 +4388,53 @@ route('friends', async (el) => {
         <p class="hint" style="color:var(--muted)">Mis à jour à chaque ouverture de l'app (au plus une fois par heure). Dernière publication : <b>${esc(fmtAgo(sbProfile.updated_at))}</b>.</p>
         <button class="btn sm" id="frPublish">Publier maintenant</button>
       </div>` : ''}
-      <span id="frStatus" class="sub"></span>
-    </div>
+      <span id="frStatus" class="sub"></span></div>`;
+  const st = box.querySelector('#frStatus');
+  const guard = (fn) => async (ev) => {
+    const t = ev.currentTarget; if (sbBusy) return; sbBusy = true; t.disabled = true;
+    try { await fn(t); } catch (e) { st.textContent = '❌ ' + (e.message || 'Échec'); t.disabled = false; }
+    sbBusy = false;
+  };
+  box.querySelector('#frAvatar').onchange = async (ev) => {
+    const file = ev.target.files[0]; if (!file || sbBusy) return; sbBusy = true; st.textContent = 'Envoi de la photo…';
+    try { const data = await avatarFromFile(file); await sbPublishProfile(true, { avatar: data }); sbCacheAccount(); render(); }
+    catch (e) { st.textContent = '❌ ' + (e.message || 'Échec'); }
+    sbBusy = false;
+  };
+  box.querySelector('#frPublic').onchange = guard(async (t) => { await sbPublishProfile(true, { is_public: t.checked }); render(); });
+  box.querySelectorAll('[data-share]').forEach(cb => cb.onchange = guard(async (t) => {
+    userState.share = Object.assign({}, userState.share, { [t.dataset.share]: t.checked }); scheduleSaveState();
+    await sbPublishProfile(true); t.disabled = false; st.textContent = '✅ Mis à jour';
+  }));
+  const pb = box.querySelector('#frPublish');
+  if (pb) pb.onclick = guard(async () => { await sbPublishProfile(true); render(); toast('Profil publié'); });
+}
+
+route('friends', async (el) => {
+  const head = `<div class="page-head"><h1>👥 Amis</h1>${acctBtn()}</div>`;
+  if (!sbSession) {
+    el.innerHTML = `${head}<div class="empty"><div class="big">👥</div><p>Pour retrouver vos amis, connectez-vous d'abord avec votre e-mail (Mon compte).</p><a class="btn primary" href="#/profile">Me connecter</a></div>`;
+    return;
+  }
+  el.innerHTML = `${head}<p class="hint" style="color:var(--muted)">Chargement…</p>`;
+  let friends = [];
+  try {
+    await sbLoadProfile();
+    if (sbProfile) { sbCacheAccount(); friends = await sbLoadFriends(); }
+  } catch (e) {
+    el.innerHTML = `${head}<div class="empty"><p>Impossible de joindre le serveur (${esc(e.message || 'hors-ligne')}). Réessayez avec Internet. Si le message parle d'une table introuvable, le script « supabase-communaute.sql » n'a pas encore été exécuté.</p></div>`;
+    return;
+  }
+  if (!sbProfile) {
+    el.innerHTML = `${head}<div class="empty"><div class="big">👥</div><p>Créez d'abord votre profil (pseudo et photo) dans Mon compte.</p><a class="btn primary" href="#/profile">Créer mon profil</a></div>`;
+    return;
+  }
+  const feed = [];
+  for (const f of friends) for (const g of ((f.snapshot && f.snapshot.recent) || [])) feed.push({ f, g });
+  feed.sort((a, b) => String(b.g.at).localeCompare(String(a.g.at)));
+  const lastOf = (f) => { const g = f.snapshot && f.snapshot.recent && f.snapshot.recent[0]; return g ? `${activityText(g)} · ${fmtAgo(g.at)}` : (f.snapshot ? 'Rien de partagé pour l\'instant' : 'Profil pas encore publié'); };
+  el.innerHTML = `${head}
+    ${sbProfile.is_public ? '' : `<div class="panel"><p class="hint" style="color:var(--muted);margin:0">🔒 Votre profil est invisible : vos amis ne peuvent pas vous trouver. <a href="#/profile">Le rendre visible</a></p></div>`}
     <div class="panel"><h3>Ajouter un ami</h3>
       <div class="row" style="display:flex;gap:10px"><input class="input" id="frAdd" placeholder="Son pseudo" autocapitalize="off" autocomplete="off" style="flex:1"><button class="btn primary" id="frAddBtn">Suivre</button></div>
       <span id="frAddStatus" class="sub"></span>
@@ -4399,31 +4444,12 @@ route('friends', async (el) => {
         : '<p class="hint" style="color:var(--muted)">Personne pour l\'instant. Demandez son pseudo à un ami (il doit avoir rendu son profil visible).</p>'}
     </div>
     ${feed.length ? `<div class="panel"><h3>Activité des amis</h3>${feed.slice(0, 20).map(x => `<div class="feed-line"><b>${esc(x.f.pseudo)}</b> ${esc(activityText(x.g))} <span class="sub">· ${esc(fmtAgo(x.g.at))}</span></div>`).join('')}</div>` : ''}`;
-
-  const st = el.querySelector('#frStatus');
-  const guard = (fn) => async (ev) => {
-    const t = ev.currentTarget; if (sbBusy) return; sbBusy = true; if (t.disabled !== undefined) t.disabled = true;
-    try { await fn(t); } catch (e) { st.textContent = '❌ ' + (e.message || 'Échec'); if (t.disabled !== undefined) t.disabled = false; }
+  el.querySelector('#frAddBtn').onclick = async (ev) => {
+    const b = ev.currentTarget, add = el.querySelector('#frAddStatus'); if (sbBusy) return; sbBusy = true; b.disabled = true; add.textContent = '…';
+    try { const p = await sbFollowByPseudo(el.querySelector('#frAdd').value.trim()); toast('Vous suivez ' + p); sbBusy = false; render(); return; }
+    catch (e) { add.textContent = '❌ ' + (e.message || 'Échec'); b.disabled = false; }
     sbBusy = false;
   };
-  el.querySelector('#frAvatar').onchange = async (ev) => {
-    const file = ev.target.files[0]; if (!file || sbBusy) return; sbBusy = true; st.textContent = 'Envoi de la photo…';
-    try { const data = await avatarFromFile(file); await sbPublishProfile(true, { avatar: data }); render(); }
-    catch (e) { st.textContent = '❌ ' + (e.message || 'Échec'); }
-    sbBusy = false;
-  };
-  el.querySelector('#frPublic').onchange = guard(async (t) => { await sbPublishProfile(true, { is_public: t.checked }); render(); });
-  el.querySelectorAll('[data-share]').forEach(cb => cb.onchange = guard(async (t) => {
-    userState.share = Object.assign({}, userState.share, { [t.dataset.share]: t.checked }); scheduleSaveState();
-    await sbPublishProfile(true); t.disabled = false; st.textContent = '✅ Mis à jour';
-  }));
-  const pb = el.querySelector('#frPublish');
-  if (pb) pb.onclick = guard(async () => { await sbPublishProfile(true); render(); toast('Profil publié'); });
-  el.querySelector('#frAddBtn').onclick = guard(async () => {
-    const add = el.querySelector('#frAddStatus'); add.textContent = '…';
-    try { const p = await sbFollowByPseudo(el.querySelector('#frAdd').value.trim()); toast('Vous suivez ' + p); render(); }
-    catch (e) { add.textContent = '❌ ' + (e.message || 'Échec'); el.querySelector('#frAddBtn').disabled = false; }
-  });
 });
 
 route('friend', async (el, rest) => {
