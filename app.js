@@ -11,6 +11,11 @@ const MOVIE_DEFAULT_RUNTIME = 115; // durée moyenne d'un film (min) quand incon
 
 // Notes de version (les plus récentes en premier), affichées dans #/changelog.
 const CHANGELOG = [
+  { id: 36, date: '28 octobre 2026', title: 'Sauvegarde en ligne', items: [
+    'Nouveau dans Réglages → « Sauvegarde en ligne » : connectez-vous avec votre e-mail (un lien vous est envoyé, pas de mot de passe) et votre historique est copié sur Internet, en privé.',
+    'Une seule sauvegarde, remplacée à chaque fois : automatiquement une fois par semaine quand vous ouvrez l\'application, ou à la demande avec « Sauvegarder maintenant ».',
+    'Le bouton « Restaurer » ramène vos données sur cet appareil ou sur un nouveau téléphone. L\'application reste utilisable sans connexion.',
+  ] },
   { id: 35, date: '27 octobre 2026', title: 'Boutons des affiches plus sûrs', items: [
     'Sur téléphone, les boutons d’une affiche (arrêter, épingler, marquer vu, revisionner, supprimer) n’apparaissent plus qu’après un appui long sur l’affiche, et ne se déclenchent plus par erreur en touchant un coin. Valable pour les séries et les films.',
   ] },
@@ -3930,6 +3935,8 @@ route('settings', async (el) => {
       <div class="row" style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn primary" id="syncAll">Synchroniser toutes mes œuvres</button><span id="syncProg" class="sub" style="align-self:center"></span></div>
     </div>
 
+    ${sbPanelHtml()}
+
     <div class="panel">
       <h3>Sauvegarde</h3>
       <p class="hint" style="color:var(--muted)">${serverAvailable
@@ -3973,6 +3980,7 @@ route('settings', async (el) => {
   if (wb) wb.onchange = (e) => { userState.weeklyBackup = e.target.checked; scheduleSaveState(); };
   el.querySelector('#shareBtn').onclick = exportSharedList;
   el.querySelector('#importFile').onchange = importData;
+  sbWirePanel(el);
 });
 
 async function syncEverything(progEl) {
@@ -4017,17 +4025,180 @@ async function syncAllMovies(progEl) {
   scheduleSaveCache();
 }
 
-function exportData(fileName) {
-  // Full backup: catalogue complet (historique) + éditions utilisateur.
+// Full backup: catalogue complet (historique) + éditions utilisateur.
+function buildBackup() {
   userState.lastBackupAt = new Date().toISOString();
   scheduleSaveState();
-  const backup = {
+  return {
     format: 'tvtime-full',
     version: APP_VERSION,
     exportedAt: userState.lastBackupAt,
     data: DATA,
     userState: userState,
   };
+}
+
+//////////////////////// Sauvegarde en ligne (Supabase) ////////////////////////
+// Connexion par lien reçu par e-mail (ou lien collé dans l'app), puis un fichier privé
+// par utilisateur (backups/<id>/backup.json) écrasé à chaque sauvegarde. La clé « publishable » est
+// publique par conception : c'est la sécurité côté Supabase (RLS) qui protège les fichiers.
+const SB_URL = 'https://loezmygglibdubyyoxpy.supabase.co';
+const SB_KEY = 'sb_publishable_Idw7zdQ4VXLJ1Rdql3SClw_lYYXAjnR';
+const SB_SESSION_KEY = 'tvtime-sb-session';
+let sbSession = null; // { at, rt, exp, uid, email } — gardé hors de userState pour ne pas finir dans les sauvegardes
+try { sbSession = JSON.parse(localStorage.getItem(SB_SESSION_KEY) || 'null'); } catch {}
+let sbPendingEmail = null; // e-mail en attente de saisie du code
+let sbBusy = false;
+function sbStoreSession(s) {
+  sbSession = s;
+  try { s ? localStorage.setItem(SB_SESSION_KEY, JSON.stringify(s)) : localStorage.removeItem(SB_SESSION_KEY); } catch {}
+}
+function sbSessionFrom(j) {
+  return { at: j.access_token, rt: j.refresh_token, exp: Date.now() + (j.expires_in || 3600) * 1000, uid: j.user && j.user.id, email: j.user && j.user.email };
+}
+async function sbRequest(path, { method = 'GET', json, body, token, headers = {} } = {}) {
+  const h = Object.assign({ apikey: SB_KEY }, headers);
+  if (token) h.Authorization = 'Bearer ' + token;
+  if (json !== undefined) { h['Content-Type'] = 'application/json'; body = JSON.stringify(json); }
+  return fetch(SB_URL + path, { method, headers: h, body });
+}
+async function sbError(res) {
+  let msg = '';
+  try { const j = await res.json(); msg = j.msg || j.message || j.error_description || j.error || ''; } catch {}
+  return new Error(msg || ('Erreur ' + res.status));
+}
+// Envoie l'e-mail contenant le lien de connexion (revient sur cette même page de l'app).
+async function sbSendLink(email) {
+  const back = encodeURIComponent(location.origin + location.pathname);
+  const res = await sbRequest('/auth/v1/otp?redirect_to=' + back, { method: 'POST', json: { email, create_user: true } });
+  if (!res.ok) throw await sbError(res);
+  sbPendingEmail = email;
+}
+// Session à partir d'un retour de lien : …#access_token=…&refresh_token=…&expires_in=…
+function sbSessionFromHash(params) {
+  const at = params.get('access_token'); if (!at) return null;
+  let claims = {};
+  try { claims = JSON.parse(atob(at.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))); } catch {}
+  return { at, rt: params.get('refresh_token'), exp: Date.now() + (parseInt(params.get('expires_in'), 10) || 3600) * 1000, uid: claims.sub, email: claims.email };
+}
+// Lien collé à la main (iPhone : l'app installée n'a pas le même stockage que Safari). Accepte le lien
+// de l'e-mail tel quel (…/auth/v1/verify?token=…) ou l'adresse où il redirige (…#access_token=…).
+async function sbSignInWithLink(text) {
+  const m = (text || '').match(/https?:\/\/\S+/);
+  if (!m) throw new Error('Collez le lien complet de l\'e-mail');
+  let u; try { u = new URL(m[0].replace(/[)>\]"']+$/, '')); } catch { throw new Error('Lien non reconnu'); }
+  const hs = new URLSearchParams(u.hash.replace(/^#/, ''));
+  if (hs.get('access_token')) {
+    const s = sbSessionFromHash(hs); if (!s || !s.uid) throw new Error('Lien non reconnu');
+    sbStoreSession(s); return;
+  }
+  const tokenHash = u.searchParams.get('token_hash') || u.searchParams.get('token');
+  if (!tokenHash) throw new Error('Lien non reconnu');
+  const res = await sbRequest('/auth/v1/verify', { method: 'POST', json: { type: u.searchParams.get('type') || 'magiclink', token_hash: tokenHash } });
+  if (!res.ok) throw await sbError(res);
+  sbStoreSession(sbSessionFrom(await res.json()));
+}
+// Retour depuis le lien de l'e-mail : la page s'ouvre avec le jeton dans l'adresse (#access_token=…).
+// À traiter avant le routeur, puis on remplace l'adresse par la page Réglages.
+(function sbHandleReturn() {
+  const h = location.hash || '';
+  if (!/access_token=|error_description=/.test(h) || /^#\//.test(h)) return;
+  const params = new URLSearchParams(h.replace(/^#/, ''));
+  let msg;
+  const s = sbSessionFromHash(params);
+  if (s && s.uid) { sbStoreSession(s); msg = 'Connecté : ' + (s.email || ''); }
+  else if (params.get('error_description')) msg = 'Lien invalide ou expiré : demandez-en un nouveau';
+  history.replaceState(null, '', location.pathname + location.search + '#/settings');
+  if (msg) setTimeout(() => toast(msg), 1200);
+})();
+// Jeton valide (rafraîchi si besoin). Renvoie null si déconnecté ; lève une erreur si hors-ligne.
+async function sbToken() {
+  if (!sbSession) return null;
+  if (Date.now() < sbSession.exp - 60000) return sbSession.at;
+  const res = await sbRequest('/auth/v1/token?grant_type=refresh_token', { method: 'POST', json: { refresh_token: sbSession.rt } });
+  if (res.status === 400 || res.status === 401) { sbStoreSession(null); return null; }
+  if (!res.ok) throw await sbError(res);
+  sbStoreSession(sbSessionFrom(await res.json()));
+  return sbSession.at;
+}
+async function sbUpload() {
+  const token = await sbToken();
+  if (!token) throw new Error('Non connecté');
+  const res = await sbRequest(`/storage/v1/object/backups/${sbSession.uid}/backup.json`, {
+    method: 'POST', token, body: JSON.stringify(buildBackup()), headers: { 'Content-Type': 'application/json', 'x-upsert': 'true' },
+  });
+  if (!res.ok) throw await sbError(res);
+  userState.lastCloudBackupAt = new Date().toISOString();
+  scheduleSaveState();
+}
+async function sbDownload() {
+  const token = await sbToken();
+  if (!token) throw new Error('Non connecté');
+  const res = await sbRequest(`/storage/v1/object/authenticated/backups/${sbSession.uid}/backup.json`, { token });
+  if (res.status === 400 || res.status === 404) return null; // aucune sauvegarde en ligne
+  if (!res.ok) throw await sbError(res);
+  return res.json();
+}
+function sbPanelHtml() {
+  let inner;
+  if (sbSession) {
+    inner = `<p class="hint" style="color:var(--muted)">Connecté : <b>${esc(sbSession.email || '')}</b><br>
+      Dernière sauvegarde en ligne : <b>${esc(fmtAgo(userState.lastCloudBackupAt))}</b></p>
+      <div class="row" style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn primary" id="sbSave">☁️ Sauvegarder maintenant</button>
+        <button class="btn" id="sbRestore">Restaurer</button>
+        <button class="btn ghost" id="sbLogout">Se déconnecter</button>
+      </div><span id="sbStatus" class="sub"></span>`;
+  } else {
+    inner = `<p class="hint" style="color:var(--muted)">Gardez votre historique en sécurité sur Internet : une seule sauvegarde privée, remplacée à chaque fois (une fois par semaine automatiquement). Indiquez votre e-mail : vous recevrez un lien ; touchez-le pour vous connecter (pas de mot de passe).</p>
+      <input class="input" id="sbEmail" type="email" autocomplete="email" placeholder="Votre e-mail" value="${esc(sbPendingEmail || '')}">
+      <div class="row" style="display:flex;gap:10px;margin-top:8px"><button class="btn primary" id="sbSend">Recevoir le lien</button></div>
+      <span id="sbStatus" class="sub">${sbPendingEmail ? '✉️ Lien envoyé : ouvrez l\'e-mail (regardez aussi les indésirables) et touchez « Sign in ».' : ''}</span>
+      <details style="margin-top:12px"><summary class="hint" style="color:var(--muted);cursor:pointer">Le lien ne m'a pas connecté (iPhone…)</summary>
+        <p class="hint" style="color:var(--muted)">Dans l'e-mail, faites un appui long sur « Sign in », choisissez « Copier le lien », puis collez-le ici.</p>
+        <input class="input" id="sbLink" placeholder="Collez le lien ici">
+        <div class="row" style="margin-top:8px"><button class="btn" id="sbPaste">Me connecter avec ce lien</button></div>
+      </details>`;
+  }
+  return `<div class="panel" id="sbPanel"><h3>Sauvegarde en ligne</h3>${inner}</div>`;
+}
+function sbWirePanel(el) {
+  const st = el.querySelector('#sbStatus');
+  const say = (t) => { if (st) st.textContent = t; };
+  const on = (id, fn) => { const b = el.querySelector(id); if (b) b.onclick = async () => {
+    if (sbBusy) return; sbBusy = true; b.disabled = true;
+    try { await fn(); } catch (e) { say('❌ ' + (e && e.message ? e.message : 'Échec (êtes-vous en ligne ?)')); b.disabled = false; }
+    sbBusy = false;
+  }; };
+  on('#sbSend', async () => {
+    const email = el.querySelector('#sbEmail').value.trim();
+    if (!/^\S+@\S+\.\S+$/.test(email)) throw new Error('E-mail invalide');
+    say('Envoi…'); await sbSendLink(email); render();
+  });
+  on('#sbPaste', async () => {
+    say('Vérification…'); await sbSignInWithLink(el.querySelector('#sbLink').value); toast('Connecté'); render();
+  });
+  on('#sbLogout', async () => { sbStoreSession(null); render(); });
+  on('#sbSave', async () => { say('Envoi…'); await sbUpload(); toast('☁️ Sauvegarde en ligne faite'); render(); });
+  on('#sbRestore', async () => {
+    say('Recherche…');
+    const parsed = await sbDownload();
+    if (!parsed) { say('Aucune sauvegarde en ligne pour ce compte.'); el.querySelector('#sbRestore').disabled = false; return; }
+    const when = parsed.exportedAt ? fmtAgo(parsed.exportedAt) : 'date inconnue';
+    if (!confirm(`Restaurer la sauvegarde en ligne (${when}) ? Elle remplacera les données de cet appareil.`)) { say(''); el.querySelector('#sbRestore').disabled = false; return; }
+    await applyBackup(parsed);
+  });
+}
+// Sauvegarde hebdomadaire silencieuse quand on est connecté.
+function sbMaybeAutoBackup() {
+  if (!sbSession || sbBusy || daysSince(userState.lastCloudBackupAt) < BACKUP_EVERY_DAYS) return false;
+  sbBusy = true;
+  sbUpload().then(() => toast('☁️ Sauvegarde en ligne faite')).catch(() => {}).finally(() => { sbBusy = false; });
+  return true;
+}
+
+function exportData(fileName) {
+  const backup = buildBackup();
   const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -4040,6 +4211,7 @@ const BACKUP_EVERY_DAYS = 7;
 function maybeWeeklyBackup() {
   if (serverAvailable || userState.weeklyBackup === false) return;
   if (!(DATA.seen || []).length && !Object.keys(userState.seenAdd || {}).length) return;
+  if (sbSession) { sbMaybeAutoBackup(); return; } // connecté : sauvegarde en ligne automatique, pas de bannière
   if (Date.now() < (userState.backupSnoozeUntil || 0)) return;
   if (daysSince(userState.lastBackupAt) < BACKUP_EVERY_DAYS) return;
   if (document.querySelector('.backup-banner')) return;
@@ -4188,35 +4360,36 @@ function importData(ev) {
   const f = ev.target.files[0]; if (!f) return;
   const r = new FileReader();
   r.onload = async () => {
-    try {
-      const parsed = JSON.parse(r.result);
-      if (parsed && parsed.format === 'tvtime-sharedlist') {
-        // Liste partagée par un ami : on fusionne sans rien écraser ni marquer vu.
-        await mergeSharedList(parsed);
-        return;
-      }
-      const cat = parsed && parsed.data && (parsed.data.shows || parsed.data.seen) ? parsed.data : null;
-      if (cat) {
-        // Sauvegarde complète : restaure le catalogue (historique) durablement — sauf si le
-        // fichier en contient beaucoup moins que l'app (ex. une simple liste) : on garde le nôtre.
-        const poorer = (cat.seen || []).length < (DATA.seen || []).length / 2 || (cat.movies || []).length < (DATA.movies || []).length / 2;
-        if (!poorer) { applyDataObject(cat); await persistDataOverride(cat); }
-        if (parsed.userState && typeof parsed.userState === 'object') userState = Object.assign(userState, parsed.userState);
-        const merged = reconcileDuplicateMovies();
-        scheduleSaveState();
-        MODEL = null;
-        toast((poorer ? 'Réglages importés — votre historique, plus complet, a été conservé' : 'Sauvegarde complète restaurée') + (merged ? ` · ${merged} film(s) en double fusionné(s)` : ''));
-        render();
-      } else {
-        // Ancien format : uniquement les éditions utilisateur.
-        userState = Object.assign(userState, parsed);
-        scheduleSaveState();
-        toast('Données importées');
-        render();
-      }
-    } catch { toast('Fichier invalide'); }
+    try { await applyBackup(JSON.parse(r.result)); } catch { toast('Fichier invalide'); }
   };
   r.readAsText(f);
+}
+// Applique le contenu d'un fichier de sauvegarde (importé ou téléchargé depuis Supabase).
+async function applyBackup(parsed) {
+  if (parsed && parsed.format === 'tvtime-sharedlist') {
+    // Liste partagée par un ami : on fusionne sans rien écraser ni marquer vu.
+    await mergeSharedList(parsed);
+    return;
+  }
+  const cat = parsed && parsed.data && (parsed.data.shows || parsed.data.seen) ? parsed.data : null;
+  if (cat) {
+    // Sauvegarde complète : restaure le catalogue (historique) durablement — sauf si le
+    // fichier en contient beaucoup moins que l'app (ex. une simple liste) : on garde le nôtre.
+    const poorer = (cat.seen || []).length < (DATA.seen || []).length / 2 || (cat.movies || []).length < (DATA.movies || []).length / 2;
+    if (!poorer) { applyDataObject(cat); await persistDataOverride(cat); }
+    if (parsed.userState && typeof parsed.userState === 'object') userState = Object.assign(userState, parsed.userState);
+    const merged = reconcileDuplicateMovies();
+    scheduleSaveState();
+    MODEL = null;
+    toast((poorer ? 'Réglages importés — votre historique, plus complet, a été conservé' : 'Sauvegarde complète restaurée') + (merged ? ` · ${merged} film(s) en double fusionné(s)` : ''));
+    render();
+  } else {
+    // Ancien format : uniquement les éditions utilisateur.
+    userState = Object.assign(userState, parsed);
+    scheduleSaveState();
+    toast('Données importées');
+    render();
+  }
 }
 
 //////////////////////// Modal ////////////////////////
