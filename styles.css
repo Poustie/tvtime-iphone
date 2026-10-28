@@ -17,6 +17,11 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; overscroll-behavior-x: none; }
+/* iPhone (app installée, barre d'état translucide) : quand la page est plus courte que l'écran, la zone
+   d'affichage est plus courte de la hauteur de la barre d'état et la barre du bas « remonte ». On force
+   la page à couvrir tout l'écran (env(...) vaut 0 sur Android et dans Safari, donc sans effet ailleurs). */
+html { min-height: 100%; min-height: calc(100% + env(safe-area-inset-top)); background: var(--bg); }
+body { min-height: 100vh; min-height: 100lvh; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -655,3 +660,14 @@ html.amoled .bottom-nav { background: rgba(0,0,0,.94); }
 .page-head:has(> .acct-btn) { position: relative; padding-right: 48px; min-height: 36px; }
 .acct-btn { position: absolute; right: 0; top: 0; display: block; line-height: 0; text-decoration: none; }
 .acct-btn .avatar { width: 36px; height: 36px; font-size: 16px; }
+
+/* Rotation : l'iPhone ne permet pas à une app web de bloquer la rotation (Android : le manifeste force déjà
+   le portrait). Sur un téléphone tourné en paysage, on masque l'app derrière un message « tournez le téléphone ». */
+.rotate-lock { display: none; }
+@media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
+  .rotate-lock { display: flex; position: fixed; inset: 0; z-index: 3000; background: var(--bg); color: var(--text);
+    flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; padding: 24px; }
+  .rotate-lock .rl-ic { font-size: 54px; line-height: 1; }
+  .rotate-lock .rl-sub { color: var(--muted); font-size: 13px; max-width: 360px; }
+  html.amoled .rotate-lock { background: #000; }
+}

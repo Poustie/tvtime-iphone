@@ -1,6 +1,6 @@
 /* Service worker: caches the app shell, TMDB posters and TMDB API responses
    so the app loads instantly and works offline (posters stay cached). */
-const VERSION = 'montvtime-v113';
+const VERSION = 'montvtime-v115';
 const SHELL = 'shell-' + VERSION;
 const IMG = 'img-' + VERSION;
 const API = 'api-' + VERSION;
